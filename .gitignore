@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+*.egg-info/
+.ruff_cache/
+
+# Node
+node_modules/
+.next/
+out/
+.turbo/
+
+# Data
+*.db
+*.sqlite3
+backend/visoradn.db
+
+# Env
+.env
+.env.local
+
+# OS
+.DS_Store
