@@ -16,6 +16,7 @@ from app.api.schemas import (
     ConstructSummary,
     EnzymeSiteOut,
     EnzymesOut,
+    FrameIssueOut,
     HistoryOut,
     ImportResult,
     OperationCreate,
@@ -25,7 +26,11 @@ from app.api.schemas import (
 )
 from app.db.models import Construct, OperationRow, utcnow
 from app.db.session import get_db
-from app.domain.analysis import find_orfs, find_restriction_sites
+from app.domain.analysis import (
+    check_reading_frames,
+    find_orfs,
+    find_restriction_sites,
+)
 from app.domain.models import (
     ConstructState,
     Feature,
@@ -122,6 +127,18 @@ def _detail(construct: Construct, state: ConstructState | None = None) -> dict:
         "length": state.length,
         "gc_content": state.gc_content,
         "warnings": state.warnings,
+        "frame_issues": [
+            FrameIssueOut(
+                feature_id=i.feature_id,
+                feature_name=i.feature_name,
+                problem=i.problem,
+                severity=i.severity,
+                detail=i.detail,
+                codon=i.codon,
+                blocking=i.blocking,
+            )
+            for i in check_reading_frames(state)
+        ],
         "can_undo": can_undo,
         "can_redo": can_redo,
         "created_at": construct.created_at,

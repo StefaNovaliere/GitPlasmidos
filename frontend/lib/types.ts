@@ -23,6 +23,23 @@ export interface Feature {
   truncated: boolean;
 }
 
+/** A coding feature whose reading frame no longer produces a protein. */
+export interface FrameIssue {
+  feature_id: string;
+  feature_name: string;
+  problem:
+    | "frameshift"
+    | "premature_stop"
+    | "no_stop_codon"
+    | "no_start_codon"
+    | "too_short";
+  severity: "error" | "warning" | "info";
+  detail: string;
+  codon: number | null;
+  /** Severe enough to gate a future branch merge. */
+  blocking: boolean;
+}
+
 export interface ConstructDetail {
   id: string;
   name: string;
@@ -32,6 +49,7 @@ export interface ConstructDetail {
   length: number;
   gc_content: number;
   warnings: string[];
+  frame_issues: FrameIssue[];
   can_undo: boolean;
   can_redo: boolean;
   created_at: string;

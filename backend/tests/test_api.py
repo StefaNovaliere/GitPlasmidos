@@ -363,3 +363,33 @@ def test_orfs_min_length_is_honoured(client):
 def test_orfs_rejects_a_nonsense_min_length(client):
     cid = import_puc19(client)["id"]
     assert client.get(f"/api/constructs/{cid}/orfs?min_length=0").status_code == 422
+
+
+# --------------------------------------------------------------------------
+# reading-frame integrity surfaced on the construct
+# --------------------------------------------------------------------------
+
+def test_a_clean_puc19_reports_no_frame_issues(client):
+    assert import_puc19(client)["frame_issues"] == []
+
+
+def test_an_out_of_frame_delete_reports_a_blocking_frameshift(client):
+    cid = import_puc19(client)["id"]
+    body = apply(client, cid, "delete", start=2000, end=2001).json()
+    (issue,) = body["frame_issues"]
+    assert issue["feature_name"] == "bla"
+    assert issue["problem"] == "frameshift"
+    assert issue["severity"] == "error"
+    assert issue["blocking"] is True
+
+
+def test_an_in_frame_delete_keeps_the_frame_intact(client):
+    cid = import_puc19(client)["id"]
+    body = apply(client, cid, "delete", start=2000, end=2003).json()
+    assert body["frame_issues"] == []
+
+
+def test_undo_clears_the_frame_issue(client):
+    cid = import_puc19(client)["id"]
+    apply(client, cid, "delete", start=2000, end=2001)
+    assert client.post(f"/api/constructs/{cid}/undo").json()["frame_issues"] == []

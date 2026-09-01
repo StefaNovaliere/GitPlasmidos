@@ -141,6 +141,21 @@ export default function ConstructPage({
         <span className="font-mono text-xs text-slate-500">
           GC {(construct.gc_content * 100).toFixed(1)}%
         </span>
+        {construct.frame_issues.some((i) => i.blocking) && (
+          <span
+            title={construct.frame_issues
+              .filter((i) => i.blocking)
+              .map((i) => `${i.feature_name}: ${i.detail}`)
+              .join("\n")}
+            className="rounded bg-red-100 px-1.5 py-0.5 text-[11px] font-medium text-red-800"
+          >
+            {construct.frame_issues.filter((i) => i.blocking).length} broken
+            reading frame
+            {construct.frame_issues.filter((i) => i.blocking).length === 1
+              ? ""
+              : "s"}
+          </span>
+        )}
         {pending && (
           <span className="text-xs text-slate-400" role="status">
             saving…
@@ -198,6 +213,7 @@ export default function ConstructPage({
             features={construct.features}
             length={construct.length}
             isCircular={construct.is_circular}
+            frameIssues={construct.frame_issues}
             selectedId={selectedFeatureId}
             onSelect={selectFeature}
             onRemove={(feature) =>

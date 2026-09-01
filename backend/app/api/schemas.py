@@ -28,6 +28,19 @@ class ConstructSummary(BaseModel):
     updated_at: datetime
 
 
+class FrameIssueOut(BaseModel):
+    """A coding feature whose reading frame no longer makes a protein."""
+
+    feature_id: str
+    feature_name: str
+    problem: str
+    severity: str
+    detail: str
+    codon: int | None = None
+    #: True for problems severe enough to gate a future branch merge.
+    blocking: bool
+
+
 class ConstructDetail(BaseModel):
     id: str
     name: str
@@ -37,6 +50,7 @@ class ConstructDetail(BaseModel):
     length: int
     gc_content: float
     warnings: list[str]
+    frame_issues: list[FrameIssueOut]
     can_undo: bool
     can_redo: bool
     created_at: datetime

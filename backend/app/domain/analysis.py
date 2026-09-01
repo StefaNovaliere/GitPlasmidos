@@ -11,7 +11,8 @@ from dataclasses import dataclass
 from Bio.Restriction import CommOnly, RestrictionBatch
 from Bio.Seq import Seq
 
-from app.domain.circular import revcomp
+from app.domain.circular import revcomp, slice_span
+from app.domain.models import ConstructState, Feature
 
 #: The cloning workhorses. Biopython ships ``AllEnzymes`` (1088) and
 #: ``CommOnly`` (623 commercially available); neither is a usable checkbox list,
@@ -32,6 +33,13 @@ COMMON_ENZYMES = (
 STANDARD_TABLE = 1
 START_CODON = "ATG"
 STOP_CODONS = frozenset({"TAA", "TAG", "TGA"})
+
+#: Feature kinds whose reading frame is meaningful.
+CODING_KINDS = frozenset({"CDS"})
+
+#: Table 1 only starts at ATG, but bacterial plasmids routinely use GTG/TTG,
+#: so those are accepted rather than reported as a missing start.
+START_CODONS = frozenset({"ATG", "GTG", "TTG"})
 
 
 @dataclass
@@ -200,3 +208,107 @@ def gc_content(sequence: str) -> float:
     if not sequence:
         return 0.0
     return (sequence.count("G") + sequence.count("C")) / len(sequence)
+
+
+# ---------------------------------------------------------------------------
+# reading-frame integrity
+# ---------------------------------------------------------------------------
+
+#: A frame problem serious enough to mean the protein is gone. Step 3 (merging
+#: two operation logs) will refuse a merge that introduces one of these.
+BLOCKING_PROBLEMS = frozenset({"frameshift", "premature_stop"})
+
+
+@dataclass
+class FrameIssue:
+    """One thing wrong with a coding feature's reading frame."""
+
+    feature_id: str
+    feature_name: str
+    #: frameshift | premature_stop | no_stop_codon | no_start_codon | too_short
+    problem: str
+    severity: str  # "error" | "warning" | "info"
+    detail: str
+    #: 1-based codon number, for ``premature_stop``.
+    codon: int | None = None
+
+    @property
+    def blocking(self) -> bool:
+        return self.problem in BLOCKING_PROBLEMS
+
+
+def coding_sequence(state: ConstructState, feature: Feature) -> str:
+    """The feature's bases, 5'->3' along its own strand.
+
+    The span is assembled *before* anything else happens to it, so a feature
+    that crosses the origin yields one continuous coding sequence and the codon
+    straddling position 0 stays intact. Reading the two segments separately is
+    the classic way to get this wrong.
+    """
+    span = slice_span(state.sequence, feature.start, feature.end, state.is_circular)
+    return revcomp(span) if feature.strand == -1 else span
+
+
+def check_reading_frames(
+    state: ConstructState, *, kinds: frozenset[str] = CODING_KINDS
+) -> list[FrameIssue]:
+    """Report coding features whose reading frame no longer makes a protein.
+
+    Cheap to run and deliberately separate from :func:`app.domain.replay.replay`:
+    replay owns coordinates, this owns meaning. Both the read endpoints and (in
+    time) the merge gate call it over the same derived state.
+    """
+    issues: list[FrameIssue] = []
+    for f in state.features:
+        if f.kind not in kinds:
+            continue
+        seq = coding_sequence(state, f)
+
+        if len(seq) < 3:
+            issues.append(
+                FrameIssue(
+                    f.id, f.name, "too_short", "error",
+                    f"{len(seq)} bp cannot hold a codon",
+                )
+            )
+            continue
+
+        if len(seq) % 3:
+            extra = len(seq) % 3
+            issues.append(
+                FrameIssue(
+                    f.id, f.name, "frameshift", "error",
+                    f"{len(seq)} bp is not a multiple of 3 "
+                    f"({extra} base{'s' if extra > 1 else ''} out of frame)",
+                )
+            )
+            # Translating a frameshifted CDS only produces downstream noise.
+            continue
+
+        protein = str(Seq(seq).translate(table=STANDARD_TABLE))
+        stop_at = protein.find("*")
+        if stop_at != -1 and stop_at < len(protein) - 1:
+            issues.append(
+                FrameIssue(
+                    f.id, f.name, "premature_stop", "error",
+                    f"stop codon at codon {stop_at + 1} of {len(protein)}, "
+                    f"truncating the protein to {stop_at} aa",
+                    codon=stop_at + 1,
+                )
+            )
+        elif not protein.endswith("*"):
+            issues.append(
+                FrameIssue(
+                    f.id, f.name, "no_stop_codon", "warning",
+                    "the last codon is not a stop codon",
+                )
+            )
+
+        if seq[:3] not in START_CODONS:
+            issues.append(
+                FrameIssue(
+                    f.id, f.name, "no_start_codon", "info",
+                    f"starts with {seq[:3]}, not ATG/GTG/TTG",
+                )
+            )
+    return issues

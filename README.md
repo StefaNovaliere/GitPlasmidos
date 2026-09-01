@@ -159,8 +159,9 @@ browser origins with `CORS_ORIGINS` on the backend.
 cd backend && uv run pytest
 ```
 
-173 tests: one per rebasing rule, explicit wraparound cases, GenBank round
-trips against two real pUC19 records, and the HTTP surface end to end.
+315 tests: one per rebasing rule, explicit wraparound cases, GenBank round
+trips against two real pUC19 records, reading-frame integrity, and the HTTP
+surface end to end.
 
 ---
 
@@ -182,7 +183,7 @@ trips against two real pUC19 records, and the HTTP surface end to end.
 | GET    | `/api/constructs/{id}/orfs`         | `?min_length=300` |
 
 `GET /{id}` returns `sequence`, `features`, `length`, `is_circular`,
-`gc_content`, `warnings`, `can_undo` and `can_redo`.
+`gc_content`, `warnings`, `frame_issues`, `can_undo` and `can_redo`.
 
 Warnings are part of the derived state: they are recomputed on every replay,
 so undoing a truncating delete makes its warning disappear along with the
@@ -193,6 +194,53 @@ by default; `?all=true` widens to every commercially available enzyme and
 includes multi-cutters. `/orfs` scans all six frames with the standard genetic
 code (NCBI table 1) and, on a circular construct, finds ORFs that run through
 the origin.
+
+---
+
+## Reading-frame integrity
+
+Rebasing coordinates correctly is not the same as keeping a construct
+*biologically* valid. Delete one base inside a CDS and every coordinate in the
+system stays perfectly consistent — while the protein is gone.
+
+`analysis.check_reading_frames(state)` runs over the derived state and reports
+each coding feature that no longer makes a protein:
+
+| problem | severity | |
+|---|---|---|
+| `frameshift` | error | length is not a multiple of 3 |
+| `premature_stop` | error | an in-frame stop before the last codon |
+| `no_stop_codon` | warning | the last codon is not a stop |
+| `no_start_codon` | info | does not begin ATG/GTG/TTG |
+
+The two `error` cases are marked `blocking`. They appear in `GET /{id}` as
+`frame_issues`, and the UI badges the offending feature. Being derived, they
+vanish on undo exactly like a truncation flag does.
+
+Deliberately *not* inside `replay()`: replay owns coordinates, this owns
+meaning. Keeping them apart is what lets the same function later gate a branch
+merge over the same derived state.
+
+### Why the origin-crossing case is the whole difficulty
+
+A CDS that wraps the origin has its codons assembled from two segments, and
+**the codon straddling position 0 belongs to neither of them**. For a 30 bp CDS
+at `[32, 2)` on a 60 bp plasmid, the tail is 28 bases and the head is 2 —
+neither is a multiple of 3, though the CDS is perfectly in frame. Any
+implementation that translates the segments separately reports a frameshift on
+a healthy gene *and* misses a real stop codon spanning the origin.
+
+`coding_sequence()` therefore assembles the whole span first, then reverse
+complements it if the feature is on the minus strand, and only then translates.
+
+`tests/test_reading_frame.py` builds its fixtures by construction rather than
+from hand-computed coordinates: a CDS with a known protein is placed in a
+plasmid, and `set_origin` rotates the molecule until the stop codon's three
+bases land on positions 59, 0 and 1. The suite's backbone is a property test
+sweeping all 59 non-trivial origins and asserting the verdict never changes —
+rotating a plasmid cannot make a gene valid or invalid. Four deliberately
+broken implementations (naive slice, per-segment translation, ignored strand,
+off-by-one on the terminal stop) were each checked to fail it.
 
 ---
 
@@ -229,11 +277,12 @@ backend/
       replay.py                replay() and every rebasing rule
       circular.py              wraparound helpers
       seqio.py                 Biopython import/export
-      analysis.py              enzymes, ORFs, GC
+      analysis.py              enzymes, ORFs, GC, reading frames
     db/                        SQLAlchemy models + session
   tests/
-    test_rebasing.py  test_circular.py  test_replay.py
-    test_seqio.py     test_analysis.py  test_api.py
+    test_rebasing.py  test_circular.py     test_replay.py
+    test_seqio.py     test_analysis.py     test_api.py
+    test_reading_frame.py
     data/                      two real pUC19 GenBank records
 frontend/
   app/constructs/[id]/page.tsx the editor

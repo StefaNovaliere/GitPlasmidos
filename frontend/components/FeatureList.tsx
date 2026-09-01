@@ -2,12 +2,13 @@
 
 import { featureColor } from "@/lib/colors";
 import { crossesOrigin, formatRange, spanLength } from "@/lib/sequence";
-import type { Feature } from "@/lib/types";
+import type { Feature, FrameIssue } from "@/lib/types";
 
 interface Props {
   features: Feature[];
   length: number;
   isCircular: boolean;
+  frameIssues: FrameIssue[];
   selectedId: string | null;
   onSelect: (feature: Feature) => void;
   onRemove: (feature: Feature) => void;
@@ -17,11 +18,19 @@ export function FeatureList({
   features,
   length,
   isCircular,
+  frameIssues,
   selectedId,
   onSelect,
   onRemove,
 }: Props) {
   const sorted = [...features].sort((a, b) => a.start - b.start);
+  const issuesByFeature = new Map<string, FrameIssue[]>();
+  for (const issue of frameIssues) {
+    issuesByFeature.set(issue.feature_id, [
+      ...(issuesByFeature.get(issue.feature_id) ?? []),
+      issue,
+    ]);
+  }
 
   return (
     <section className="flex min-h-0 flex-1 flex-col">
@@ -41,6 +50,8 @@ export function FeatureList({
         <ul>
           {sorted.map((feature) => {
             const selected = feature.id === selectedId;
+            const issues = issuesByFeature.get(feature.id) ?? [];
+            const broken = issues.some((i) => i.blocking);
             return (
               <li key={feature.id}>
                 <div
@@ -70,6 +81,18 @@ export function FeatureList({
                         <span className="truncate text-xs font-medium text-slate-800">
                           {feature.name}
                         </span>
+                        {issues.length > 0 && (
+                          <span
+                            title={issues.map((i) => i.detail).join("\n")}
+                            className={`shrink-0 rounded px-1 text-[10px] font-semibold ${
+                              broken
+                                ? "bg-red-100 text-red-800"
+                                : "bg-slate-100 text-slate-600"
+                            }`}
+                          >
+                            {broken ? issues[0].problem.replace("_", " ") : "frame"}
+                          </span>
+                        )}
                         {feature.truncated && (
                           <span
                             title="Clipped by an edit"
