@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from app.domain.models import Feature, OperationError
+from app.domain.models import OperationError
 from app.domain.replay import replay
 from tests.conftest import feat, op, ops, spans
 

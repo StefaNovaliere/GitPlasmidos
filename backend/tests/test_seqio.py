@@ -230,8 +230,10 @@ def test_fasta_export_header_mentions_length_and_topology(puc19):
 def _minimal_genbank(features: list[tuple[str, str, list[str]]]) -> str:
     """Assemble a tiny GenBank file, respecting the fixed column layout."""
     lines = [
-        "LOCUS       TEST                      40 bp    DNA     circular SYN "
-        "01-JAN-2020",
+        (
+            "LOCUS       TEST                      40 bp    DNA     circular "
+            "SYN 01-JAN-2020"
+        ),
         "DEFINITION  test.",
         "FEATURES             Location/Qualifiers",
     ]

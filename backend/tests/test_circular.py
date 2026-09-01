@@ -13,7 +13,6 @@ from app.domain.circular import (
     slice_span,
     span_length,
 )
-from app.domain.models import Feature
 from app.domain.replay import replay
 from tests.conftest import feat, ops, spans
 
@@ -191,7 +190,7 @@ def test_set_origin_preserves_every_feature_subsequence(origin):
     before = {f.id: slice_span(SEQ, f.start, f.end, True) for f in base}
     state = replay(SEQ, base, ops(("set_origin", {"pos": origin})))
     after = {f.id: covered_seq(state, f.id) for f in state.features}
-    for fid in before:
-        assert len(after[fid]) == len(before[fid])
+    for fid, seq in before.items():
+        assert len(after[fid]) == len(seq)
     # "whole" always covers the entire (rotated) molecule
     assert len(after["whole"]) == 20

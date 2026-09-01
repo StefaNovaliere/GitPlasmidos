@@ -10,7 +10,7 @@ This module is pure: no I/O, no FastAPI, no SQLAlchemy.
 
 from __future__ import annotations
 
-from typing import Iterable
+from collections.abc import Iterable
 
 from app.domain.circular import (
     recombine,
@@ -95,6 +95,9 @@ def rebase_insert(
 
     A feature that strictly contains ``pos`` therefore keeps its start and grows
     its end, i.e. it swallows the inserted bases.
+
+    ``length`` and ``is_circular`` are unused here - insertion needs no segment
+    decomposition - but are kept so all four ``rebase_*`` helpers share a shape.
     """
     out: list[Feature] = []
     for f in features:

@@ -7,15 +7,15 @@ are persisted. The current state is always derived by
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from sqlalchemy import (
+    JSON,
     Boolean,
     DateTime,
     ForeignKey,
     Index,
     Integer,
-    JSON,
     String,
     Text,
     UniqueConstraint,
@@ -24,7 +24,7 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
 def utcnow() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 class Base(DeclarativeBase):
@@ -44,7 +44,7 @@ class Construct(Base):
         DateTime, default=utcnow, onupdate=utcnow
     )
 
-    operations: Mapped[list["OperationRow"]] = relationship(
+    operations: Mapped[list[OperationRow]] = relationship(
         back_populates="construct",
         cascade="all, delete-orphan",
         order_by="OperationRow.index",

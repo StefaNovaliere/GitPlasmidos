@@ -116,7 +116,7 @@ def _span_from_location(loc, seq_len: int) -> tuple[tuple[int, int], str | None]
         return (int(parts[1].start), int(parts[0].end)), None
     return (
         (int(parts[0].start), int(parts[-1].end)),
-        "join with {} parts flattened to its outer bounds".format(len(parts)),
+        f"join with {len(parts)} parts flattened to its outer bounds",
     )
 
 

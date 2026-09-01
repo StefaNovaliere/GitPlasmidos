@@ -40,8 +40,8 @@ class EnzymeSite:
     site: str
     #: 0-based positions on the top strand where the enzyme cuts.
     cut_positions: list[int]
-    #: 0-based start of each recognition site occurrence.
-    overhang: str  # "5'", "3'" or "blunt"
+    #: "5'", "3'" or "blunt".
+    overhang: str
 
     @property
     def cuts(self) -> int:
@@ -153,7 +153,8 @@ def find_orfs(
     if n < 3:
         return []
     hay = sequence + sequence if is_circular else sequence
-    limit = n if is_circular else n
+    # No ORF may wrap the molecule more than once.
+    limit = n
     seen: set[tuple[int, int, int]] = set()
     orfs: list[Orf] = []
 
