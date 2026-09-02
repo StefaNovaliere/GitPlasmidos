@@ -24,6 +24,12 @@ const SeqViz = dynamic(() => import("seqviz").then((m) => m.SeqViz), {
 interface Props {
   construct: ConstructDetail;
   enzymes: string[];
+  /**
+   * A range to scroll to. SeqViz moves the linear viewer whenever `selection`
+   * arrives as a prop rather than from a drag, so this is set briefly and then
+   * cleared - leaving it set would override the user's own selections.
+   */
+  focus?: SelectionRange | null;
   onSelection: (
     selection: SelectionRange | null,
     annotationName: string | null,
@@ -57,7 +63,7 @@ function deadSpan(feature: Feature, issue: FrameIssue) {
     : { start: issue.stop_end as number, end: feature.end };
 }
 
-export function SeqVizPane({ construct, enzymes, onSelection }: Props) {
+export function SeqVizPane({ construct, enzymes, focus, onSelection }: Props) {
   // seqviz renders `start > end` annotations across the origin natively, so
   // origin-crossing features can be passed straight through. The exception is
   // a gene a premature stop has cut in half: that one is split so the part
@@ -126,6 +132,9 @@ export function SeqVizPane({ construct, enzymes, onSelection }: Props) {
         viewer="both"
         annotations={annotations}
         highlights={highlights}
+        selection={
+          focus ? { start: focus.start, end: focus.end, clockwise: true } : undefined
+        }
         enzymes={enzymeNames}
         primers={[]}
         showComplement

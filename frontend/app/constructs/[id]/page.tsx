@@ -14,7 +14,7 @@ import { useToasts } from "@/components/Toasts";
 import { api } from "@/lib/api";
 import { isActionable } from "@/lib/sequence";
 import { useConstruct } from "@/lib/useConstruct";
-import type { Feature, SelectionRange } from "@/lib/types";
+import type { Feature, FrameIssue, SelectionRange } from "@/lib/types";
 
 export default function ConstructPage({
   params,
@@ -40,6 +40,7 @@ export default function ConstructPage({
   const [selection, setSelection] = useState<SelectionRange | null>(null);
   const [selectedFeatureId, setSelectedFeatureId] = useState<string | null>(null);
   const [enzymes, setEnzymes] = useState<string[]>([]);
+  const [focus, setFocus] = useState<SelectionRange | null>(null);
   const [panelCollapsed, setPanelCollapsed] = useState(false);
 
   // Ctrl/Cmd+Z and Ctrl/Cmd+Shift+Z.
@@ -88,6 +89,32 @@ export default function ConstructPage({
     setSelectedFeatureId(feature.id);
   }, []);
 
+  /**
+   * Jump to whatever a frame issue is about. A premature stop has one codon to
+   * blame, so go to it; a frameshift does not - the frame is wrong from the
+   * indel onwards - so go to the feature it ruined.
+   */
+  const goToIssue = useCallback(
+    (issue: FrameIssue) => {
+      if (!construct) return;
+      const feature = construct.features.find((f) => f.id === issue.feature_id);
+      const target =
+        issue.stop_start !== null && issue.stop_end !== null
+          ? { start: issue.stop_start, end: issue.stop_end }
+          : feature
+            ? { start: feature.start, end: feature.end }
+            : null;
+      if (!target) return;
+      setSelection(target);
+      setSelectedFeatureId(feature?.id ?? null);
+      setFocus(target);
+      // Hand selection back to the viewer once it has scrolled, so dragging
+      // keeps working.
+      window.setTimeout(() => setFocus(null), 600);
+    },
+    [construct],
+  );
+
   const runOperation = useCallback(
     async (kind: Parameters<typeof apply>[0], payload: Record<string, unknown>) => {
       const ok = await apply(kind, payload);
@@ -103,6 +130,8 @@ export default function ConstructPage({
     () => (selection && selection.start === selection.end ? selection.start : null),
     [selection],
   );
+
+  const blockingIssues = construct?.frame_issues.filter((i) => i.blocking) ?? [];
 
   const actionableSelection =
     construct && isActionable(selection, construct.length, construct.is_circular)
@@ -144,20 +173,24 @@ export default function ConstructPage({
         <span className="font-mono text-xs text-slate-500">
           GC {(construct.gc_content * 100).toFixed(1)}%
         </span>
-        {construct.frame_issues.some((i) => i.blocking) && (
-          <span
-            title={construct.frame_issues
-              .filter((i) => i.blocking)
-              .map((i) => `${i.feature_name}: ${i.detail}`)
-              .join("\n")}
-            className="rounded bg-red-100 px-1.5 py-0.5 text-[11px] font-medium text-red-800"
+        {blockingIssues.length > 0 && (
+          <button
+            type="button"
+            onClick={() => goToIssue(blockingIssues[0])}
+            title={
+              "DNA is read three letters at a time, and each triplet is one " +
+              "amino acid. These features no longer read as the protein they " +
+              "are annotated as:\n\n" +
+              blockingIssues
+                .map((i) => `${i.feature_name} — ${i.detail}`)
+                .join("\n") +
+              "\n\nClick to go there."
+            }
+            className="rounded bg-red-100 px-1.5 py-0.5 text-[11px] font-medium text-red-800 hover:bg-red-200"
           >
-            {construct.frame_issues.filter((i) => i.blocking).length} broken
-            reading frame
-            {construct.frame_issues.filter((i) => i.blocking).length === 1
-              ? ""
-              : "s"}
-          </span>
+            {blockingIssues.length} broken reading frame
+            {blockingIssues.length === 1 ? "" : "s"} →
+          </button>
         )}
         {pending && (
           <span className="text-xs text-slate-400" role="status">
@@ -247,6 +280,7 @@ export default function ConstructPage({
           <SeqVizPane
             construct={construct}
             enzymes={enzymes}
+            focus={focus}
             onSelection={handleViewerSelection}
           />
         </main>

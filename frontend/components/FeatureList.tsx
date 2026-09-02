@@ -1,5 +1,7 @@
 "use client";
 
+import { useEffect, useRef } from "react";
+
 import { featureColor } from "@/lib/colors";
 import { crossesOrigin, formatRange, spanLength } from "@/lib/sequence";
 import type { Feature, FrameIssue } from "@/lib/types";
@@ -24,6 +26,13 @@ export function FeatureList({
   onRemove,
 }: Props) {
   const sorted = [...features].sort((a, b) => a.start - b.start);
+  const selectedRow = useRef<HTMLLIElement>(null);
+
+  // Selecting a feature from elsewhere - the header badge, say - should bring
+  // its row into view rather than leave it somewhere down the list.
+  useEffect(() => {
+    selectedRow.current?.scrollIntoView({ block: "nearest" });
+  }, [selectedId]);
   const issuesByFeature = new Map<string, FrameIssue[]>();
   for (const issue of frameIssues) {
     issuesByFeature.set(issue.feature_id, [
@@ -53,7 +62,7 @@ export function FeatureList({
             const issues = issuesByFeature.get(feature.id) ?? [];
             const broken = issues.some((i) => i.blocking);
             return (
-              <li key={feature.id}>
+              <li key={feature.id} ref={selected ? selectedRow : undefined}>
                 <div
                   className={`group flex w-full items-start gap-2 border-l-2 px-3 py-1.5 text-left ${
                     selected

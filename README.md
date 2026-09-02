@@ -251,6 +251,8 @@ each coding feature that no longer makes a protein:
 | `no_stop_codon` | warning | the last codon is not a stop |
 | `no_start_codon` | info | does not begin ATG/GTG/TTG |
 
+![Clicking the badge jumps to the ruined feature](docs/frame-badge.png)
+
 The two `error` cases are marked `blocking`. They appear in `GET /{id}` as
 `frame_issues`, and the UI badges the offending feature. Being derived, they
 vanish on undo exactly like a truncation flag does.
@@ -356,9 +358,19 @@ annotations: the part that still makes protein in its own colour, the 126
 codons downstream of the stop at a quarter alpha, and the stop codon itself
 under a red highlight.
 
-SeqViz has no API for scrolling to a position and no way to inject a custom
-glyph, so the close-up is a purpose-built codon track rather than a fight with
-the library. At thirty bases it is the clearer rendering anyway.
+SeqViz has no way to inject a custom glyph, so the close-up is a
+purpose-built codon track rather than a fight with the library; at thirty
+bases it is the clearer rendering anyway. It *can* be navigated, though: a
+`selection` passed as a prop rather than made by dragging scrolls the linear
+viewer to it. The red badge in the header uses that — clicking it selects the
+ruined feature, scrolls the viewer to it, and brings its row into view. A
+premature stop has one codon to blame and the badge goes straight to it; a
+frameshift has none, because the frame is wrong from the indel onwards, so it
+goes to the feature instead.
+
+The prop is set briefly and then cleared: leaving it in place would override
+the user's own selections, since SeqViz treats a supplied selection as
+authoritative.
 
 ### Why the frame has to be carried
 
