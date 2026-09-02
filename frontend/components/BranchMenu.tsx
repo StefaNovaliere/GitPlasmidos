@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 
 import { DiffView } from "@/components/DiffView";
+import { MergeConflictView } from "@/components/MergeConflictView";
 import { ApiError, api } from "@/lib/api";
 import type { BranchSummary, ConstructDetail, MergePreview } from "@/lib/types";
 
@@ -156,8 +157,19 @@ export function BranchMenu({
             </ul>
           )}
 
-          {refused && <RefusalReport preview={refused} onForce={doMerge} />}
+          {refused && refused.conflicts.length > 0 && (
+            <ConflictReport preview={refused} />
+          )}
         </div>
+      )}
+
+      {refused && refused.conflicts.length === 0 && (
+        <MergeConflictView
+          preview={refused}
+          target={construct}
+          onForce={() => void doMerge(refused.branch_id, true)}
+          onClose={() => setRefused(null)}
+        />
       )}
 
       {comparing && (
@@ -171,60 +183,23 @@ export function BranchMenu({
   );
 }
 
-function RefusalReport({
-  preview,
-  onForce,
-}: {
-  preview: MergePreview;
-  onForce: (branchId: string, force: boolean) => void;
-}) {
-  const blocking = preview.new_frame_issues.filter((i) => i.blocking);
-
+function ConflictReport({ preview }: { preview: MergePreview }) {
   return (
     <div className="mt-3 rounded border border-red-200 bg-red-50 p-2">
-      {preview.conflicts.length > 0 ? (
-        <>
-          <p className="font-semibold text-red-900">
-            The two branches edited the same bases.
-          </p>
-          <ul className="mt-1 list-disc pl-4 text-red-800">
-            {preview.conflicts.map((c) => (
-              <li key={`${c.branch_index}-${c.reason}`}>
-                operation {c.branch_index} ({c.kind}): {c.detail}
-              </li>
-            ))}
-          </ul>
-          <p className="mt-1.5 text-[11px] text-red-700">
-            Coordinate clashes cannot be forced — undo one side, or redo the
-            edit against the merged sequence.
-          </p>
-        </>
-      ) : (
-        <>
-          <p className="font-semibold text-red-900">
-            The merge applies cleanly but breaks a reading frame.
-          </p>
-          <ul className="mt-1 list-disc pl-4 text-red-800">
-            {blocking.map((issue) => (
-              <li key={`${issue.feature_id}-${issue.problem}`}>
-                <span className="font-medium">{issue.feature_name}</span>:{" "}
-                {issue.detail}
-              </li>
-            ))}
-          </ul>
-          <p className="mt-1.5 text-[11px] text-red-700">
-            Neither branch had this problem on its own — the combination
-            created it.
-          </p>
-          <button
-            type="button"
-            onClick={() => onForce(preview.branch_id, true)}
-            className="mt-2 rounded border border-red-300 bg-white px-2 py-0.5 text-red-800 hover:bg-red-100"
-          >
-            Merge anyway
-          </button>
-        </>
-      )}
+      <p className="font-semibold text-red-900">
+        The two branches edited the same bases.
+      </p>
+      <ul className="mt-1 list-disc pl-4 text-red-800">
+        {preview.conflicts.map((c) => (
+          <li key={`${c.branch_index}-${c.reason}`}>
+            operation {c.branch_index} ({c.kind}): {c.detail}
+          </li>
+        ))}
+      </ul>
+      <p className="mt-1.5 text-[11px] text-red-700">
+        Coordinate clashes cannot be forced — undo one side, or redo the edit
+        against the merged sequence.
+      </p>
     </div>
   );
 }

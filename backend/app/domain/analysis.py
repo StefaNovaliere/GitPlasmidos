@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from Bio.Restriction import CommOnly, RestrictionBatch
 from Bio.Seq import Seq
 
-from app.domain.circular import revcomp, slice_span
+from app.domain.circular import revcomp, segments, slice_span
 from app.domain.models import ConstructState, Feature
 
 #: The cloning workhorses. Biopython ships ``AllEnzymes`` (1088) and
@@ -231,6 +231,15 @@ class FrameIssue:
     detail: str
     #: 1-based codon number, for ``premature_stop``.
     codon: int | None = None
+    #: Genomic half-open span of the offending codon, so a viewer can point at
+    #: it. ``None`` when the span crosses the origin and cannot be written as
+    #: one interval.
+    stop_start: int | None = None
+    stop_end: int | None = None
+    #: Genomic half-open span that still makes protein. Everything else in the
+    #: feature is downstream of the stop and is never translated.
+    translated_start: int | None = None
+    translated_end: int | None = None
 
     @property
     def blocking(self) -> bool:
@@ -247,6 +256,32 @@ def coding_sequence(state: ConstructState, feature: Feature) -> str:
     """
     span = slice_span(state.sequence, feature.start, feature.end, state.is_circular)
     return revcomp(span) if feature.strand == -1 else span
+
+
+def cds_positions(state: ConstructState, feature: Feature) -> list[int]:
+    """Genomic indices of a coding feature's bases, in reading order.
+
+    For a minus-strand feature that is the reverse of genomic order, which is
+    what makes it possible to map a codon number back onto the map.
+    """
+    positions = [
+        p
+        for start, end in segments(
+            feature.start, feature.end, len(state.sequence), state.is_circular
+        )
+        for p in range(start, end)
+    ]
+    return positions[::-1] if feature.strand == -1 else positions
+
+
+def _contiguous_span(positions: list[int]) -> tuple[int | None, int | None]:
+    """``(start, end)`` if these genomic indices form one run, else ``None``s."""
+    if not positions:
+        return None, None
+    low, high = min(positions), max(positions)
+    if high - low + 1 != len(positions):
+        return None, None  # crosses the origin; no single interval says it
+    return low, high + 1
 
 
 def check_reading_frames(
@@ -288,12 +323,23 @@ def check_reading_frames(
         protein = str(Seq(seq).translate(table=STANDARD_TABLE))
         stop_at = protein.find("*")
         if stop_at != -1 and stop_at < len(protein) - 1:
+            reading = cds_positions(state, f)
+            stop_start, stop_end = _contiguous_span(
+                reading[stop_at * 3 : stop_at * 3 + 3]
+            )
+            translated_start, translated_end = _contiguous_span(
+                reading[: stop_at * 3]
+            )
             issues.append(
                 FrameIssue(
                     f.id, f.name, "premature_stop", "error",
                     f"stop codon at codon {stop_at + 1} of {len(protein)}, "
                     f"truncating the protein to {stop_at} aa",
                     codon=stop_at + 1,
+                    stop_start=stop_start,
+                    stop_end=stop_end,
+                    translated_start=translated_start,
+                    translated_end=translated_end,
                 )
             )
         elif not protein.endswith("*"):

@@ -40,7 +40,15 @@ class FrameIssueOut(BaseModel):
     severity: str
     detail: str
     codon: int | None = None
-    #: True for problems severe enough to gate a future branch merge.
+    #: Genomic half-open span of the offending codon, for pointing at it on
+    #: the map. Null when it crosses the origin, or for a frameshift, where
+    #: there is no single position to blame.
+    stop_start: int | None = None
+    stop_end: int | None = None
+    #: Genomic half-open span that still makes protein.
+    translated_start: int | None = None
+    translated_end: int | None = None
+    #: True for problems severe enough to gate a branch merge.
     blocking: bool
 
 
@@ -161,6 +169,14 @@ class MergePreview(BaseModel):
     conflicts: list[ConflictOut] = Field(default_factory=list)
     #: Reading-frame damage the merge itself introduces.
     new_frame_issues: list[FrameIssueOut] = Field(default_factory=list)
+    #: What the merge would produce. Present whenever the coordinates merged,
+    #: including when the result is refused for breaking a reading frame -
+    #: showing the damage is the whole point of refusing.
+    merged_sequence: str | None = None
+    merged_length: int | None = None
+    #: The features as the merge would rebase them, so a viewer can read the
+    #: damaged gene in its own frame rather than guessing at coordinates.
+    merged_features: list[Feature] = Field(default_factory=list)
 
 
 class MergeRequest(BaseModel):

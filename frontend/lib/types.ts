@@ -36,7 +36,13 @@ export interface FrameIssue {
   severity: "error" | "warning" | "info";
   detail: string;
   codon: number | null;
-  /** Severe enough to gate a future branch merge. */
+  /** Genomic half-open span of the offending codon; null for a frameshift. */
+  stop_start: number | null;
+  stop_end: number | null;
+  /** Genomic half-open span that still makes protein. */
+  translated_start: number | null;
+  translated_end: number | null;
+  /** Severe enough to gate a branch merge. */
   blocking: boolean;
 }
 
@@ -145,6 +151,10 @@ export interface MergePreview {
   skipped: MergeConflict[];
   conflicts: MergeConflict[];
   new_frame_issues: FrameIssue[];
+  /** What the merge would produce, present whenever the coordinates merged. */
+  merged_sequence: string | null;
+  merged_length: number | null;
+  merged_features: Feature[];
 }
 
 export interface DiffSide {

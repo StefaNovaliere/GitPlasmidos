@@ -14,7 +14,11 @@ from pathlib import Path
 
 import pytest
 
-from app.domain.analysis import check_reading_frames, coding_sequence
+from app.domain.analysis import (
+    cds_positions,
+    check_reading_frames,
+    coding_sequence,
+)
 from app.domain.circular import revcomp, slice_span
 from app.domain.models import ConstructState
 from app.domain.replay import replay
@@ -297,3 +301,64 @@ def test_breaking_bla_in_puc19_is_reported():
     )
     reported = {i.feature_name: i.problem for i in check_reading_frames(state)}
     assert reported == {"bla": "frameshift"}
+
+
+# --------------------------------------------------------------------------
+# where the break is, on the map
+# --------------------------------------------------------------------------
+
+def test_a_premature_stop_reports_where_it_sits_on_the_plus_strand():
+    state = build(PLASMID, 30, 60, edits=[("insert", {"pos": 33, "seq": "TAA"})])
+    (issue,) = check_reading_frames(state)
+    assert (issue.stop_start, issue.stop_end) == (33, 36)
+    assert state.sequence[33:36] == "TAA"
+    # Codon 1 is translated, then it stops.
+    assert (issue.translated_start, issue.translated_end) == (30, 33)
+
+
+def test_the_reported_span_is_the_part_that_still_makes_protein():
+    state = build(PLASMID, 30, 60, edits=[("insert", {"pos": 42, "seq": "TAA"})])
+    (issue,) = check_reading_frames(state)
+    translated = issue.translated_end - issue.translated_start
+    assert translated % 3 == 0
+    assert translated // 3 == issue.codon - 1
+
+
+def test_cds_positions_run_backwards_for_a_minus_strand_feature():
+    state = build(FILLER + revcomp(CDS), 30, 60, strand=-1)
+    reading = cds_positions(state, cds_of(state))
+    assert reading[0] == 59 and reading[-1] == 30
+    # The first three genomic bases in reading order spell the start codon.
+    assert revcomp("".join(state.sequence[p] for p in reading[:3])[::-1]) == "ATG"
+
+
+def test_a_break_in_a_minus_strand_gene_is_reported_on_the_plus_strand():
+    """The coordinates a viewer needs are genomic, whatever strand codes."""
+    record = parse_sequence_file(
+        (DATA / "puc19_annotated.gb").read_text(), "puc19.gb"
+    )
+    state = replay(
+        record.sequence,
+        record.features,
+        ops(("insert", {"pos": 2001, "seq": "AAT"}),
+            ("insert", {"pos": 2004, "seq": "CAG"})),
+    )
+    (issue,) = check_reading_frames(state)
+    assert issue.feature_name == "bla" and issue.codon == 163
+
+    # bla reads on the minus strand, so the stop is TCA on the top strand.
+    assert (issue.stop_start, issue.stop_end) == (2003, 2006)
+    assert state.sequence[2003:2006] == "TCA"
+    assert revcomp(state.sequence[2003:2006]) == "TGA"
+
+    # 162 codons survive, and they sit downstream of the stop in genomic terms
+    # because the gene reads backwards.
+    assert issue.translated_end - issue.translated_start == 162 * 3
+    assert issue.translated_start == issue.stop_end
+
+
+def test_no_coordinates_are_invented_for_a_frameshift():
+    state = build(PLASMID, 30, 60, edits=[("insert", {"pos": 33, "seq": "T"})])
+    (issue,) = check_reading_frames(state)
+    assert issue.problem == "frameshift"
+    assert issue.stop_start is None and issue.translated_start is None

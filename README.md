@@ -189,7 +189,7 @@ anything.
 cd backend && uv run pytest
 ```
 
-411 tests: one per rebasing rule, explicit wraparound cases, GenBank round
+420 tests: one per rebasing rule, explicit wraparound cases, GenBank round
 trips against two real pUC19 records, reading-frame integrity, log merging,
 diffing, the seeded scenarios, and the HTTP surface end to end.
 
@@ -329,6 +329,33 @@ tip are not blamed on it. And the refusal is overridable with
 `allow_frame_breaks`, because deliberately building a frameshift mutant is real
 work - blocking by default is the point, blocking absolutely would be
 paternalistic.
+
+### Showing the damage, not just naming it
+
+![The merge refusal, read as codons](docs/merge-blocked.png)
+
+A 409 with a message is not an explanation. The refusal opens a three-track
+view at codon resolution — each branch, then the projected merge — aligned on
+the codon that broke. Both branches read `… D R [F|C] W E P E …`; the merge
+reads `… D R * F W E …` at the same position. That is the whole argument, on
+one screen.
+
+Two things make it possible. The frame check reports the break in **genomic**
+coordinates (`stop_start`, `translated_start`, …), not just a codon number, so
+a viewer can point at it without re-deriving anything; for a gene on the minus
+strand, like `bla`, that means translating a codon index backwards through the
+feature. And the merge preview returns the sequence *and* the rebased features
+it would produce, so the projected track is read in the gene's own frame rather
+than guessed at.
+
+On the map, a gene a premature stop has cut in half is drawn as two
+annotations: the part that still makes protein in its own colour, the 126
+codons downstream of the stop at a quarter alpha, and the stop codon itself
+under a red highlight.
+
+SeqViz has no API for scrolling to a position and no way to inject a custom
+glyph, so the close-up is a purpose-built codon track rather than a fight with
+the library. At thirty bases it is the clearer rendering anyway.
 
 ### Why the frame has to be carried
 

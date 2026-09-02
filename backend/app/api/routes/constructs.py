@@ -137,6 +137,10 @@ def _frame_issue(issue) -> FrameIssueOut:
         severity=issue.severity,
         detail=issue.detail,
         codon=issue.codon,
+        stop_start=issue.stop_start,
+        stop_end=issue.stop_end,
+        translated_start=issue.translated_start,
+        translated_end=issue.translated_end,
         blocking=issue.blocking,
     )
 
@@ -559,6 +563,15 @@ def _preview(branch_id: str, result) -> dict:
         skipped=[to_out(c) for c in result.skipped],
         conflicts=[to_out(c) for c in result.conflicts],
         new_frame_issues=[_frame_issue(i) for i in result.new_frame_issues],
+        merged_sequence=(
+            result.merged_state.sequence if result.merged_state else None
+        ),
+        merged_length=(
+            result.merged_state.length if result.merged_state else None
+        ),
+        merged_features=(
+            result.merged_state.features if result.merged_state else []
+        ),
     ).model_dump(mode="json")
 
 

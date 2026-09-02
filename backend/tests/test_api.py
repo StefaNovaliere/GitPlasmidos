@@ -688,3 +688,69 @@ def test_diffing_a_construct_against_itself_is_422(client):
 def test_diffing_against_something_that_does_not_exist_is_404(client):
     cid = import_puc19(client)["id"]
     assert diff(client, cid, "nope").status_code == 404
+
+
+def test_a_refused_merge_still_shows_what_it_would_have_produced(client):
+    """Refusing without showing the damage would defeat the point."""
+    record = (DATA / "puc19_annotated.gb").read_bytes()
+    parent = client.post(
+        "/api/constructs/import",
+        files={"file": ("puc19.gb", record, "chemical/x-genbank")},
+    ).json()
+    cid = parent["id"]
+    child = branch_of(client, cid, "AmpR +Cys")
+
+    # Both edits add one codon to bla at the same site; each is clean.
+    assert apply(client, cid, "insert", pos=2001,
+                 seq="AAT").json()["frame_issues"] == []
+    assert apply(client, child["id"], "insert", pos=2001,
+                 seq="CAG").json()["frame_issues"] == []
+
+    detail = merge(client, cid, child["id"]).json()["detail"]
+    (issue,) = detail["new_frame_issues"]
+    assert issue["feature_name"] == "bla" and issue["codon"] == 163
+
+    # Enough to draw the break on the map without guessing.
+    assert (issue["stop_start"], issue["stop_end"]) == (2003, 2006)
+    assert issue["translated_end"] - issue["translated_start"] == 162 * 3
+    assert detail["merged_length"] == 2692
+    assert detail["merged_sequence"][2003:2006] == "TCA"
+
+
+def test_a_clean_preview_also_carries_the_merged_sequence(client):
+    cid = import_puc19(client)["id"]
+    child = branch_of(client, cid)
+    apply(client, child["id"], "delete", start=100, end=200)
+    preview = client.post(
+        f"/api/constructs/{cid}/merge/preview", json={"branch_id": child["id"]}
+    ).json()
+    assert preview["clean"] is True
+    assert preview["merged_length"] == 2586
+    assert len(preview["merged_sequence"]) == 2586
+
+
+def test_a_conflicted_merge_has_no_merged_sequence_to_show(client):
+    cid = import_puc19(client)["id"]
+    child = branch_of(client, cid)
+    apply(client, cid, "delete", start=1000, end=1200)
+    apply(client, child["id"], "delete", start=1100, end=1300)
+    detail = merge(client, cid, child["id"]).json()["detail"]
+    assert detail["conflicts"]
+    assert detail["merged_sequence"] is None
+
+
+def test_the_preview_carries_the_features_as_the_merge_would_rebase_them(client):
+    cid = import_puc19(client)["id"]
+    child = branch_of(client, cid)
+    apply(client, cid, "insert", pos=0, seq="GGGG")
+    apply(client, child["id"], "delete", start=1000, end=1100)
+
+    preview = client.post(
+        f"/api/constructs/{cid}/merge/preview", json={"branch_id": child["id"]}
+    ).json()
+    bla = next(
+        f for f in preview["merged_features"]
+        if f["name"] == "bla" and f["kind"] == "CDS"
+    )
+    # +4 from the parent's insert, -100 from the branch's delete.
+    assert (bla["start"], bla["end"]) == (1625 + 4 - 100, 2486 + 4 - 100)
