@@ -1,11 +1,13 @@
 /** Thin typed client for the FastAPI backend. */
 
 import type {
+  BranchSummary,
   ConstructDetail,
   ConstructSummary,
   EnzymesResponse,
   History,
   ImportResult,
+  MergePreview,
   OperationKind,
   Orf,
 } from "./types";
@@ -18,6 +20,8 @@ export class ApiError extends Error {
   constructor(
     message: string,
     readonly status: number,
+    /** The raw `detail` body — a MergePreview for a refused merge. */
+    readonly detail?: unknown,
   ) {
     super(message);
     this.name = "ApiError";
@@ -39,29 +43,39 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   }
 
   if (!response.ok) {
-    throw new ApiError(await readErrorDetail(response), response.status);
+    const { message, detail } = await readErrorDetail(response);
+    throw new ApiError(message, response.status, detail);
   }
   if (response.status === 204) return undefined as T;
   return (await response.json()) as T;
 }
 
-async function readErrorDetail(response: Response): Promise<string> {
+async function readErrorDetail(
+  response: Response,
+): Promise<{ message: string; detail?: unknown }> {
+  const fallback = `${response.status} ${response.statusText}`;
   try {
     const body = await response.json();
     const detail = body?.detail;
-    if (typeof detail === "string") return detail;
+    if (typeof detail === "string") return { message: detail, detail };
     if (Array.isArray(detail)) {
       // FastAPI validation errors
-      return detail
-        .map((d: { loc?: unknown[]; msg?: string }) =>
-          [d.loc?.slice(1).join("."), d.msg].filter(Boolean).join(": "),
-        )
-        .join("; ");
+      return {
+        message: detail
+          .map((d: { loc?: unknown[]; msg?: string }) =>
+            [d.loc?.slice(1).join("."), d.msg].filter(Boolean).join(": "),
+          )
+          .join("; "),
+        detail,
+      };
+    }
+    if (detail && typeof detail === "object") {
+      return { message: "The merge was refused.", detail };
     }
   } catch {
     /* fall through to the status text */
   }
-  return `${response.status} ${response.statusText}`;
+  return { message: fallback };
 }
 
 export const api = {
@@ -119,6 +133,30 @@ export const api = {
     request<{ orfs: Orf[] }>(
       `/api/constructs/${id}/orfs?min_length=${minLength}`,
     ),
+
+  createBranch: (id: string, name: string) =>
+    request<ConstructDetail>(`/api/constructs/${id}/branch`, {
+      method: "POST",
+      body: JSON.stringify({ name }),
+    }),
+
+  listBranches: (id: string) =>
+    request<BranchSummary[]>(`/api/constructs/${id}/branches`),
+
+  previewMerge: (id: string, branchId: string) =>
+    request<MergePreview>(`/api/constructs/${id}/merge/preview`, {
+      method: "POST",
+      body: JSON.stringify({ branch_id: branchId }),
+    }),
+
+  mergeBranch: (id: string, branchId: string, allowFrameBreaks = false) =>
+    request<ConstructDetail>(`/api/constructs/${id}/merge`, {
+      method: "POST",
+      body: JSON.stringify({
+        branch_id: branchId,
+        allow_frame_breaks: allowFrameBreaks,
+      }),
+    }),
 
   exportUrl: (id: string, format: "genbank" | "fasta") =>
     `${API_BASE}/api/constructs/${id}/export?format=${format}`,

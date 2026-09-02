@@ -1,8 +1,10 @@
 "use client";
 
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { use, useCallback, useEffect, useMemo, useState } from "react";
 
+import { BranchMenu } from "@/components/BranchMenu";
 import { EnzymePanel } from "@/components/EnzymePanel";
 import { FeatureList } from "@/components/FeatureList";
 import { HistoryPanel } from "@/components/HistoryPanel";
@@ -20,6 +22,7 @@ export default function ConstructPage({
   params: Promise<{ id: string }>;
 }) {
   const { id } = use(params);
+  const router = useRouter();
   const { push, pushAll } = useToasts();
 
   const onWarnings = useCallback(
@@ -31,7 +34,7 @@ export default function ConstructPage({
     [push],
   );
 
-  const { construct, history, loading, pending, error, apply, undo, redo } =
+  const { construct, history, loading, pending, error, apply, undo, redo, reload } =
     useConstruct(id, onWarnings, onError);
 
   const [selection, setSelection] = useState<SelectionRange | null>(null);
@@ -162,6 +165,16 @@ export default function ConstructPage({
           </span>
         )}
         <div className="ml-auto flex items-center gap-2 text-xs">
+          <BranchMenu
+            construct={construct}
+            busy={pending}
+            onMerged={() => {
+              push("Branch merged.", "info");
+              void reload();
+            }}
+            onBranchCreated={(id) => router.push(`/constructs/${id}`)}
+            onError={onError}
+          />
           <a
             href={api.exportUrl(construct.id, "genbank")}
             className="rounded border border-slate-300 px-2 py-1 text-slate-700 hover:bg-slate-100"

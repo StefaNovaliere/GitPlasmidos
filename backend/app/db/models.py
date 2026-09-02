@@ -39,9 +39,23 @@ class Construct(Base):
     is_circular: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     base_sequence: Mapped[str] = mapped_column(Text, default="", nullable=False)
     base_features: Mapped[list] = mapped_column(JSON, default=list, nullable=False)
+    #: Set when this construct was forked off another. A branch shares its
+    #: parent's base sequence and the first ``fork_index`` of its operations,
+    #: which is what makes the two logs mergeable.
+    parent_id: Mapped[str | None] = mapped_column(
+        ForeignKey("constructs.id", ondelete="SET NULL"), nullable=True
+    )
+    fork_index: Mapped[int | None] = mapped_column(Integer, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, default=utcnow, onupdate=utcnow
+    )
+
+    branches: Mapped[list[Construct]] = relationship(
+        back_populates="parent", cascade="save-update", lazy="selectin"
+    )
+    parent: Mapped[Construct | None] = relationship(
+        back_populates="branches", remote_side="Construct.id"
     )
 
     operations: Mapped[list[OperationRow]] = relationship(

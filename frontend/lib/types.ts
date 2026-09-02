@@ -43,6 +43,7 @@ export interface FrameIssue {
 export interface ConstructDetail {
   id: string;
   name: string;
+  parent_id: string | null;
   is_circular: boolean;
   sequence: string;
   features: Feature[];
@@ -63,6 +64,7 @@ export interface ImportResult extends ConstructDetail {
 export interface ConstructSummary {
   id: string;
   name: string;
+  parent_id: string | null;
   is_circular: boolean;
   length: number;
   operation_count: number;
@@ -114,4 +116,31 @@ export interface Orf {
 export interface SelectionRange {
   start: number;
   end: number;
+}
+
+export interface BranchSummary {
+  id: string;
+  name: string;
+  length: number;
+  /** Operations this branch has added since the fork. */
+  ahead: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface MergeConflict {
+  branch_index: number;
+  kind: string;
+  reason: string;
+  detail: string;
+}
+
+/** What a merge would do — also the body of a 409 when it cannot proceed. */
+export interface MergePreview {
+  branch_id: string;
+  clean: boolean;
+  rebased: number;
+  skipped: MergeConflict[];
+  conflicts: MergeConflict[];
+  new_frame_issues: FrameIssue[];
 }

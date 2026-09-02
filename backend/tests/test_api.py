@@ -393,3 +393,186 @@ def test_undo_clears_the_frame_issue(client):
     cid = import_puc19(client)["id"]
     apply(client, cid, "delete", start=2000, end=2001)
     assert client.post(f"/api/constructs/{cid}/undo").json()["frame_issues"] == []
+
+
+# --------------------------------------------------------------------------
+# branching and merging
+# --------------------------------------------------------------------------
+
+def branch_of(client, cid: str, name: str = "work") -> dict:
+    resp = client.post(f"/api/constructs/{cid}/branch", json={"name": name})
+    assert resp.status_code == 201, resp.text
+    return resp.json()
+
+
+def merge(client, cid: str, branch_id: str, **extra):
+    return client.post(
+        f"/api/constructs/{cid}/merge", json={"branch_id": branch_id, **extra}
+    )
+
+
+def test_a_branch_starts_identical_to_its_parent(client):
+    parent = import_puc19(client)
+    apply(client, parent["id"], "delete", start=600, end=700)
+    parent = client.get(f"/api/constructs/{parent['id']}").json()
+
+    child = branch_of(client, parent["id"])
+    assert child["parent_id"] == parent["id"]
+    assert child["sequence"] == parent["sequence"]
+    assert child["features"] == parent["features"]
+    # The parent's history came along, so the branch can undo it too.
+    assert child["can_undo"] is True
+    assert len(client.get(f"/api/constructs/{child['id']}/history").json()
+               ["operations"]) == 1
+
+
+def test_branches_are_listed_with_how_far_ahead_they_are(client):
+    parent = import_puc19(client)
+    child = branch_of(client, parent["id"], "cassette swap")
+    apply(client, child["id"], "delete", start=100, end=200)
+    apply(client, child["id"], "insert", pos=50, seq="GGGG")
+
+    (listed,) = client.get(f"/api/constructs/{parent['id']}/branches").json()
+    assert listed["name"] == "cassette swap"
+    assert listed["ahead"] == 2
+
+
+def test_editing_a_branch_does_not_touch_the_parent(client):
+    parent = import_puc19(client)
+    child = branch_of(client, parent["id"])
+    apply(client, child["id"], "delete", start=100, end=200)
+    assert client.get(f"/api/constructs/{parent['id']}").json()["length"] == 2686
+    assert client.get(f"/api/constructs/{child['id']}").json()["length"] == 2586
+
+
+def test_merging_non_overlapping_edits_applies_both(client):
+    parent = import_puc19(client)
+    cid = parent["id"]
+    child = branch_of(client, cid)
+
+    apply(client, cid, "delete", start=2400, end=2500)      # parent edits late
+    apply(client, child["id"], "delete", start=100, end=200)  # branch edits early
+
+    merged = merge(client, cid, child["id"])
+    assert merged.status_code == 200, merged.text
+    body = merged.json()
+    assert body["length"] == 2686 - 100 - 100
+    history = client.get(f"/api/constructs/{cid}/history").json()
+    assert [o["kind"] for o in history["operations"]] == ["delete", "delete"]
+    assert [o["index"] for o in history["operations"]] == [0, 1]
+
+
+def test_a_merged_operation_is_rebased_not_copied_verbatim(client):
+    parent = import_puc19(client)
+    cid = parent["id"]
+    child = branch_of(client, cid)
+    apply(client, cid, "insert", pos=0, seq="GGGG")            # shifts everything
+    apply(client, child["id"], "delete", start=1000, end=1100)
+
+    assert merge(client, cid, child["id"]).status_code == 200
+    ops = client.get(f"/api/constructs/{cid}/history").json()["operations"]
+    assert ops[1]["payload"] == {"start": 1004, "end": 1104}
+
+
+def test_overlapping_edits_are_refused_with_the_conflict_listed(client):
+    parent = import_puc19(client)
+    cid = parent["id"]
+    child = branch_of(client, cid)
+    apply(client, cid, "delete", start=1000, end=1200)
+    apply(client, child["id"], "delete", start=1100, end=1300)
+
+    resp = merge(client, cid, child["id"])
+    assert resp.status_code == 409
+    detail = resp.json()["detail"]
+    assert detail["clean"] is False
+    assert [c["reason"] for c in detail["conflicts"]] == ["overlapping_edit"]
+    # Nothing was written.
+    assert client.get(f"/api/constructs/{cid}").json()["length"] == 2686 - 200
+
+
+def test_preview_reports_without_writing(client):
+    parent = import_puc19(client)
+    cid = parent["id"]
+    child = branch_of(client, cid)
+    apply(client, cid, "delete", start=2400, end=2500)
+    apply(client, child["id"], "delete", start=100, end=200)
+
+    preview = client.post(
+        f"/api/constructs/{cid}/merge/preview", json={"branch_id": child["id"]}
+    ).json()
+    assert preview["clean"] is True
+    assert preview["rebased"] == 1
+    assert client.get(f"/api/constructs/{cid}").json()["length"] == 2586
+
+
+def test_merging_something_that_is_not_a_branch_is_422(client):
+    a = import_puc19(client)
+    b = import_puc19(client)
+    assert merge(client, a["id"], b["id"]).status_code == 422
+
+
+def test_a_merge_that_breaks_a_reading_frame_is_refused(client):
+    """Two edits that merge cleanly and jointly ruin the protein."""
+    #  ATG + 4 Pro codons + TAA, then filler.
+    seq = "ATG" + "CCC" * 4 + "TAA" + "GGG" * 10
+    created = client.post(
+        "/api/constructs",
+        json={
+            "name": "reporter", "sequence": seq, "is_circular": True,
+            "features": [{"id": "cds", "name": "gfp", "kind": "CDS",
+                          "start": 0, "end": 18, "strand": 1}],
+        },
+    ).json()
+    cid = created["id"]
+    child = branch_of(client, cid)
+
+    assert apply(client, cid, "insert", pos=4, seq="CCT").json()["frame_issues"] == []
+    assert apply(client, child["id"], "insert", pos=4,
+                 seq="AAG").json()["frame_issues"] == []
+
+    resp = merge(client, cid, child["id"])
+    assert resp.status_code == 409
+    detail = resp.json()["detail"]
+    assert detail["conflicts"] == []            # coordinates were fine ...
+    (issue,) = detail["new_frame_issues"]        # ... the biology was not
+    assert issue["problem"] == "premature_stop"
+    assert issue["codon"] == 3
+    assert issue["blocking"] is True
+
+    # The target is untouched by the refusal: its own 3 bp insert and nothing
+    # of the branch's.
+    after = client.get(f"/api/constructs/{cid}").json()
+    assert after["length"] == len(seq) + 3
+    assert after["frame_issues"] == []
+
+
+def test_a_frame_breaking_merge_can_be_forced(client):
+    seq = "ATG" + "CCC" * 4 + "TAA" + "GGG" * 10
+    cid = client.post(
+        "/api/constructs",
+        json={"name": "reporter", "sequence": seq, "is_circular": True,
+              "features": [{"id": "cds", "name": "gfp", "kind": "CDS",
+                            "start": 0, "end": 18, "strand": 1}]},
+    ).json()["id"]
+    child = branch_of(client, cid)
+    apply(client, cid, "insert", pos=4, seq="CCT")
+    apply(client, child["id"], "insert", pos=4, seq="AAG")
+
+    forced = merge(client, cid, child["id"], allow_frame_breaks=True)
+    assert forced.status_code == 200
+    assert [i["problem"] for i in forced.json()["frame_issues"]] == [
+        "premature_stop"
+    ]
+
+
+def test_undoing_below_the_fork_point_blocks_the_merge(client):
+    parent = import_puc19(client)
+    cid = parent["id"]
+    apply(client, cid, "delete", start=600, end=700)
+    child = branch_of(client, cid)          # forked with one shared operation
+    apply(client, child["id"], "delete", start=100, end=200)
+
+    client.post(f"/api/constructs/{cid}/undo")   # rewrites the shared history
+    resp = merge(client, cid, child["id"])
+    assert resp.status_code == 409
+    assert "fork" in resp.json()["detail"].lower()

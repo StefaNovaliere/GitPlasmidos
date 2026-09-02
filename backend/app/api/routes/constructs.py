@@ -11,6 +11,9 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.api.schemas import (
+    BranchCreate,
+    BranchSummary,
+    ConflictOut,
     ConstructCreate,
     ConstructDetail,
     ConstructSummary,
@@ -19,6 +22,8 @@ from app.api.schemas import (
     FrameIssueOut,
     HistoryOut,
     ImportResult,
+    MergePreview,
+    MergeRequest,
     OperationCreate,
     OperationOut,
     OrfOut,
@@ -31,6 +36,7 @@ from app.domain.analysis import (
     find_orfs,
     find_restriction_sites,
 )
+from app.domain.merge import merge_logs
 from app.domain.models import (
     ConstructState,
     Feature,
@@ -115,30 +121,32 @@ def _undo_redo_flags(construct: Construct) -> tuple[bool, bool]:
     )
 
 
+def _frame_issue(issue) -> FrameIssueOut:
+    return FrameIssueOut(
+        feature_id=issue.feature_id,
+        feature_name=issue.feature_name,
+        problem=issue.problem,
+        severity=issue.severity,
+        detail=issue.detail,
+        codon=issue.codon,
+        blocking=issue.blocking,
+    )
+
+
 def _detail(construct: Construct, state: ConstructState | None = None) -> dict:
     state = state if state is not None else _derive(construct)
     can_undo, can_redo = _undo_redo_flags(construct)
     return {
         "id": construct.id,
         "name": construct.name,
+        "parent_id": construct.parent_id,
         "is_circular": construct.is_circular,
         "sequence": state.sequence,
         "features": state.features,
         "length": state.length,
         "gc_content": state.gc_content,
         "warnings": state.warnings,
-        "frame_issues": [
-            FrameIssueOut(
-                feature_id=i.feature_id,
-                feature_name=i.feature_name,
-                problem=i.problem,
-                severity=i.severity,
-                detail=i.detail,
-                codon=i.codon,
-                blocking=i.blocking,
-            )
-            for i in check_reading_frames(state)
-        ],
+        "frame_issues": [_frame_issue(i) for i in check_reading_frames(state)],
         "can_undo": can_undo,
         "can_redo": can_redo,
         "created_at": construct.created_at,
@@ -227,6 +235,7 @@ def list_constructs(db: DbSession) -> list[dict]:
             {
                 "id": construct.id,
                 "name": construct.name,
+                "parent_id": construct.parent_id,
                 "is_circular": construct.is_circular,
                 "length": state.length,
                 "operation_count": len(construct.operations),
@@ -443,3 +452,199 @@ def orfs(
             for o in found
         ],
     }
+
+
+# ---------------------------------------------------------------------------
+# branching and merging
+# ---------------------------------------------------------------------------
+
+def _live(construct: Construct) -> list[OperationRow]:
+    return [r for r in construct.operations if not r.reverted]
+
+
+@router.post(
+    "/{construct_id}/branch",
+    response_model=ConstructDetail,
+    status_code=status.HTTP_201_CREATED,
+)
+def create_branch(construct_id: str, body: BranchCreate, db: DbSession) -> dict:
+    """Fork a construct.
+
+    The fork copies the base and the parent's live operations, and remembers
+    how many of them it took. That count is the common ancestor a later merge
+    rebases against.
+    """
+    parent = _load(db, construct_id)
+    live = _live(parent)
+
+    branch = Construct(
+        id=_new_id(),
+        name=(body.name.strip() or f"{parent.name} (branch)")[:255],
+        is_circular=parent.is_circular,
+        base_sequence=parent.base_sequence,
+        base_features=list(parent.base_features or []),
+        parent_id=parent.id,
+        fork_index=len(live),
+    )
+    db.add(branch)
+    db.flush()
+    for i, row in enumerate(live):
+        db.add(
+            OperationRow(
+                id=_new_id(),
+                construct_id=branch.id,
+                index=i,
+                kind=row.kind,
+                payload=row.payload,
+                reverted=False,
+            )
+        )
+    db.commit()
+    db.refresh(branch)
+    return _detail(branch)
+
+
+@router.get("/{construct_id}/branches", response_model=list[BranchSummary])
+def list_branches(construct_id: str, db: DbSession) -> list[dict]:
+    construct = _load(db, construct_id)
+    out = []
+    for branch in sorted(construct.branches, key=lambda b: b.created_at):
+        state = _derive(branch)
+        out.append(
+            {
+                "id": branch.id,
+                "name": branch.name,
+                "length": state.length,
+                "ahead": max(0, len(_live(branch)) - (branch.fork_index or 0)),
+                "created_at": branch.created_at,
+                "updated_at": branch.updated_at,
+            }
+        )
+    return out
+
+
+def _preview(branch_id: str, result) -> dict:
+    """A JSON-safe summary of a merge.
+
+    Plain primitives rather than models: this doubles as an ``HTTPException``
+    detail, and FastAPI serialises those with ``json.dumps``.
+    """
+
+    def to_out(conflict) -> ConflictOut:
+        return ConflictOut(
+            branch_index=conflict.branch_index,
+            kind=conflict.kind,
+            reason=conflict.reason,
+            detail=conflict.detail,
+        )
+
+    return MergePreview(
+        branch_id=branch_id,
+        clean=result.clean,
+        rebased=len(result.rebased),
+        skipped=[to_out(c) for c in result.skipped],
+        conflicts=[to_out(c) for c in result.conflicts],
+        new_frame_issues=[_frame_issue(i) for i in result.new_frame_issues],
+    ).model_dump(mode="json")
+
+
+def _prepare_merge(target: Construct, branch: Construct):
+    """Validate the pair shares an ancestor, then rebase the branch's log."""
+    if branch.parent_id != target.id:
+        raise HTTPException(
+            HTTP_422_UNPROCESSABLE,
+            f"{branch.name!r} is not a branch of {target.name!r}.",
+        )
+    if branch.base_sequence != target.base_sequence:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            "The two constructs no longer share a base sequence.",
+        )
+
+    fork = branch.fork_index or 0
+    target_live, branch_live = _live(target), _live(branch)
+    if len(target_live) < fork or len(branch_live) < fork:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            "History was undone below the fork point; the two logs no longer "
+            "share the ancestor they were forked from.",
+        )
+
+    base_features = _base_features(target)
+    ancestor_ops = _domain_ops(target_live[:fork])
+    shared = replay(
+        target.base_sequence, base_features, ancestor_ops,
+        is_circular=target.is_circular,
+    )
+    forked_from = replay(
+        target.base_sequence, base_features, _domain_ops(branch_live[:fork]),
+        is_circular=target.is_circular,
+    )
+    if (shared.sequence, shared.features) != (
+        forked_from.sequence,
+        forked_from.features,
+    ):
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            "The shared history diverged after the fork; rebase the branch "
+            "manually before merging.",
+        )
+
+    return merge_logs(
+        target.base_sequence,
+        base_features,
+        ancestor_ops,
+        _domain_ops(target_live[fork:]),
+        _domain_ops(branch_live[fork:]),
+        is_circular=target.is_circular,
+        construct_id=target.id,
+    )
+
+
+@router.post("/{construct_id}/merge/preview", response_model=MergePreview)
+def preview_merge(construct_id: str, body: MergeRequest, db: DbSession) -> dict:
+    """Report what merging a branch would do, without writing anything."""
+    target = _load(db, construct_id)
+    branch = _load(db, body.branch_id)
+    return _preview(branch.id, _prepare_merge(target, branch))
+
+
+@router.post("/{construct_id}/merge", response_model=ConstructDetail)
+def merge_branch(construct_id: str, body: MergeRequest, db: DbSession) -> dict:
+    """Merge a branch into this construct by rebasing its operations.
+
+    Refuses with 409 either when the two logs edited the same bases, or when
+    the merge introduces reading-frame damage that neither side had. The 409
+    body is a :class:`MergePreview` saying which.
+    """
+    target = _load(db, construct_id)
+    branch = _load(db, body.branch_id)
+    result = _prepare_merge(target, branch)
+
+    if result.has_conflicts or (
+        result.breaks_biology and not body.allow_frame_breaks
+    ):
+        raise HTTPException(
+            status.HTTP_409_CONFLICT, _preview(branch.id, result)
+        )
+
+    # Same rule as applying any new operation: a merge discards the redo stack.
+    for row in target.operations:
+        if row.reverted:
+            db.delete(row)
+    db.flush()
+    for op in result.rebased:
+        db.add(
+            OperationRow(
+                id=_new_id(),  # the branch still owns the original row
+                construct_id=target.id,
+                index=op.index,
+                kind=op.kind,
+                payload=op.payload,
+                reverted=False,
+            )
+        )
+    target.updated_at = utcnow()
+    db.commit()
+    db.refresh(target)
+    return _detail(target)

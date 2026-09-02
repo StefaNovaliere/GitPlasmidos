@@ -21,6 +21,7 @@ class ConstructCreate(BaseModel):
 class ConstructSummary(BaseModel):
     id: str
     name: str
+    parent_id: str | None = None
     is_circular: bool
     length: int
     operation_count: int
@@ -44,6 +45,7 @@ class FrameIssueOut(BaseModel):
 class ConstructDetail(BaseModel):
     id: str
     name: str
+    parent_id: str | None = None
     is_circular: bool
     sequence: str
     features: list[Feature]
@@ -114,3 +116,54 @@ class OrfsOut(BaseModel):
     construct_id: str
     min_length: int
     orfs: list[OrfOut]
+
+
+class BranchCreate(BaseModel):
+    """Fork a construct, carrying its base and its live operations."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(default="", max_length=255)
+
+
+class BranchSummary(BaseModel):
+    id: str
+    name: str
+    length: int
+    #: Operations this branch has added since the fork.
+    ahead: int
+    created_at: datetime
+    updated_at: datetime
+
+
+class ConflictOut(BaseModel):
+    """One branch operation that could not be replayed onto the target."""
+
+    branch_index: int
+    kind: str
+    reason: str
+    detail: str
+
+
+class MergePreview(BaseModel):
+    """What a merge would do. Also the body of a 409 when it cannot proceed."""
+
+    branch_id: str
+    clean: bool
+    #: Operations that would be appended to the target's log.
+    rebased: int
+    #: Branch operations the target had already satisfied.
+    skipped: list[ConflictOut] = Field(default_factory=list)
+    conflicts: list[ConflictOut] = Field(default_factory=list)
+    #: Reading-frame damage the merge itself introduces.
+    new_frame_issues: list[FrameIssueOut] = Field(default_factory=list)
+
+
+class MergeRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    branch_id: str
+    #: Commit even though the merge breaks a reading frame. Off by default:
+    #: silently shipping a dead protein is the failure this project exists to
+    #: prevent, but deliberately building a frameshift mutant is real work.
+    allow_frame_breaks: bool = False

@@ -159,9 +159,9 @@ browser origins with `CORS_ORIGINS` on the backend.
 cd backend && uv run pytest
 ```
 
-315 tests: one per rebasing rule, explicit wraparound cases, GenBank round
-trips against two real pUC19 records, reading-frame integrity, and the HTTP
-surface end to end.
+360 tests: one per rebasing rule, explicit wraparound cases, GenBank round
+trips against two real pUC19 records, reading-frame integrity, log merging,
+and the HTTP surface end to end.
 
 ---
 
@@ -181,6 +181,10 @@ surface end to end.
 | GET    | `/api/constructs/{id}/export`       | `?format=genbank\|fasta` |
 | GET    | `/api/constructs/{id}/enzymes`      | `?all=true`, `?names=EcoRI,BamHI` |
 | GET    | `/api/constructs/{id}/orfs`         | `?min_length=300` |
+| POST   | `/api/constructs/{id}/branch`       | fork, carrying base and history |
+| GET    | `/api/constructs/{id}/branches`     | branches and how far ahead each is |
+| POST   | `/api/constructs/{id}/merge/preview`| what a merge would do |
+| POST   | `/api/constructs/{id}/merge`        | rebase a branch's log onto this one |
 
 `GET /{id}` returns `sequence`, `features`, `length`, `is_circular`,
 `gc_content`, `warnings`, `frame_issues`, `can_undo` and `can_redo`.
@@ -218,8 +222,8 @@ The two `error` cases are marked `blocking`. They appear in `GET /{id}` as
 vanish on undo exactly like a truncation flag does.
 
 Deliberately *not* inside `replay()`: replay owns coordinates, this owns
-meaning. Keeping them apart is what lets the same function later gate a branch
-merge over the same derived state.
+meaning. Keeping them apart is what lets the same function gate a branch merge
+over the same derived state - see below.
 
 ### Why the origin-crossing case is the whole difficulty
 
@@ -241,6 +245,77 @@ sweeping all 59 non-trivial origins and asserting the verdict never changes —
 rotating a plasmid cannot make a gene valid or invalid. Four deliberately
 broken implementations (naive slice, per-segment translation, ignored strand,
 off-by-one on the terminal stop) were each checked to fail it.
+
+---
+
+## Branching and merging
+
+A branch is just a construct that shares its parent's base and the first
+`fork_index` of its operations. That makes every existing endpoint work on it
+unchanged - a branch can be viewed, edited, undone and exported like anything
+else.
+
+Merging is a **rebase of the operation log**. Because the history is a list of
+semantic operations rather than a blob of text, the branch's operations can be
+re-expressed against the target's tip:
+
+```
+                  ancestor
+                 /        \
+   target adds  P0 P1     B0 B1  adds branch
+                 \        /
+         target + P0 P1 + B0' B1'      B' = B rebased through P
+```
+
+Rebasing `delete [1000, 1100)` through a preceding `insert(pos=0, 4 bp)` gives
+`delete [1004, 1104)` - the same endpoint arithmetic `replay()` uses to move
+*features* across an edit, turned ninety degrees to move *operations*.
+
+### Two independent ways a merge can fail
+
+**Coordinate conflicts.** The two branches touched the same bases. Reported
+exactly as a text merge reports overlapping hunks, and not forceable - undo one
+side, or redo the edit against the merged sequence.
+
+**Biological breakage.** This is the interesting one. Two edits can be
+perfectly non-overlapping, merge cleanly at the coordinate level, and still
+destroy the protein:
+
+```
+ancestor CDS   ATG CCC CCC CCC CCC TAA        M P P P P *
+target   +CCT  ATG CCC TCC CCC CCC CCC TAA    M P S P P P *   fine
+branch   +AAG  ATG CAA GCC CCC CCC CCC TAA    M Q A P P P *   fine
+merged         ATG CCC TAA GCC CCC ...        M P *           gone
+```
+
+Both inserts are 3 bp, so neither shifts the frame, and both are single points,
+which cannot overlap. A text merge - or a CRDT over the sequence - reports
+success. Running `check_reading_frames()` over the merged state catches it, and
+the merge is refused with a 409 naming the codon.
+
+Only damage the merge *introduces* counts: problems already present on either
+tip are not blamed on it. And the refusal is overridable with
+`allow_frame_breaks`, because deliberately building a frameshift mutant is real
+work - blocking by default is the point, blocking absolutely would be
+paternalistic.
+
+### Why the frame has to be carried
+
+Branch operation *i* is written against the branch state after operations
+`0..i-1`, not against the ancestor. Rebasing it through the target's transforms
+alone puts it in the wrong place, so the transform chain is carried across each
+branch operation as it is applied.
+`test_a_second_branch_operation_is_rebased_from_its_own_frame` is the
+regression test: without carrying, the second insert lands *inside* the bases
+the target inserted rather than in front of the ancestor base it was aimed at.
+
+Operations whose range crosses the origin are decomposed the way `replay()`
+applies them - rotate the range to the front, do the linear thing, rotate back -
+so a rotation on one side carries the other side's edit around the molecule
+without a special case.
+
+Endpoints: `POST /{id}/branch`, `GET /{id}/branches`,
+`POST /{id}/merge/preview` and `POST /{id}/merge`.
 
 ---
 
@@ -278,6 +353,7 @@ backend/
       circular.py              wraparound helpers
       seqio.py                 Biopython import/export
       analysis.py              enzymes, ORFs, GC, reading frames
+      merge.py                 rebasing one operation log onto another
     db/                        SQLAlchemy models + session
   tests/
     test_rebasing.py  test_circular.py     test_replay.py
