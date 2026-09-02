@@ -16,9 +16,13 @@ from app.api.schemas import (
     ConflictOut,
     ConstructCreate,
     ConstructDetail,
+    ConstructDiffOut,
     ConstructSummary,
+    DiffSide,
     EnzymeSiteOut,
     EnzymesOut,
+    FeatureChangeOut,
+    FeatureDiffOut,
     FrameIssueOut,
     HistoryOut,
     ImportResult,
@@ -26,8 +30,11 @@ from app.api.schemas import (
     MergeRequest,
     OperationCreate,
     OperationOut,
+    OperationsDiffOut,
     OrfOut,
     OrfsOut,
+    SequenceDiffOut,
+    SequenceSegmentOut,
 )
 from app.db.models import Construct, OperationRow, utcnow
 from app.db.session import get_db
@@ -36,6 +43,7 @@ from app.domain.analysis import (
     find_orfs,
     find_restriction_sites,
 )
+from app.domain.diff import diff_states
 from app.domain.merge import merge_logs
 from app.domain.models import (
     ConstructState,
@@ -648,3 +656,98 @@ def merge_branch(construct_id: str, body: MergeRequest, db: DbSession) -> dict:
     db.commit()
     db.refresh(target)
     return _detail(target)
+
+
+# ---------------------------------------------------------------------------
+# diffing two constructs
+# ---------------------------------------------------------------------------
+
+def _operation_out(row: OperationRow) -> OperationOut:
+    return OperationOut(
+        id=row.id,
+        index=row.index,
+        kind=row.kind,
+        payload=row.payload or {},
+        reverted=row.reverted,
+        created_at=row.created_at,
+    )
+
+
+def _operations_diff(left: Construct, right: Construct) -> OperationsDiffOut:
+    """Split the two logs at the fork they share, when they share one."""
+    left_live, right_live = _live(left), _live(right)
+    if right.parent_id == left.id:
+        fork = right.fork_index or 0
+    elif left.parent_id == right.id:
+        fork = left.fork_index or 0
+    else:
+        fork = 0
+    fork = min(fork, len(left_live), len(right_live))
+    return OperationsDiffOut(
+        shared=fork,
+        left_only=[_operation_out(r) for r in left_live[fork:]],
+        right_only=[_operation_out(r) for r in right_live[fork:]],
+    )
+
+
+def _feature_change(change) -> FeatureChangeOut:
+    return FeatureChangeOut(
+        before=change.before,
+        after=change.after,
+        changed_fields=change.changed_fields,
+    )
+
+
+def _relationship(left: Construct, right: Construct) -> str:
+    if right.parent_id == left.id:
+        return "branch"
+    if left.parent_id == right.id:
+        return "parent"
+    return "unrelated"
+
+
+@router.get("/{construct_id}/diff", response_model=ConstructDiffOut)
+def diff_constructs(
+    construct_id: str,
+    db: DbSession,
+    against: Annotated[str, Query(description="The construct to compare with")],
+) -> dict:
+    """Compare this construct's derived state with another's.
+
+    Works on any pair, related or not. When the two are a branch and its
+    parent, the operation logs are also split at the fork they share.
+    """
+    left = _load(db, construct_id)
+    right = _load(db, against)
+    if left.id == right.id:
+        raise HTTPException(
+            HTTP_422_UNPROCESSABLE, "A construct cannot be diffed against itself."
+        )
+
+    left_state, right_state = _derive(left), _derive(right)
+    diff = diff_states(left_state, right_state)
+
+    return {
+        "left": DiffSide(id=left.id, name=left.name, length=left_state.length),
+        "right": DiffSide(id=right.id, name=right.name, length=right_state.length),
+        "relationship": _relationship(left, right),
+        "sequence": SequenceDiffOut(
+            identical=diff.sequence.identical,
+            identity=diff.sequence.identity,
+            bases_added=diff.sequence.bases_added,
+            bases_removed=diff.sequence.bases_removed,
+            origin_shift=diff.sequence.origin_shift,
+            segments=[
+                SequenceSegmentOut(**vars(segment))
+                for segment in diff.sequence.segments
+            ],
+        ),
+        "features": FeatureDiffOut(
+            added=diff.features.added,
+            removed=diff.features.removed,
+            changed=[_feature_change(c) for c in diff.features.changed],
+            shifted=[_feature_change(c) for c in diff.features.shifted],
+            unchanged=diff.features.unchanged,
+        ),
+        "operations": _operations_diff(left, right),
+    }

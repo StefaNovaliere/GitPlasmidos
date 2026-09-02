@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 
+import { DiffView } from "@/components/DiffView";
 import { ApiError, api } from "@/lib/api";
 import type { BranchSummary, ConstructDetail, MergePreview } from "@/lib/types";
 
@@ -32,6 +33,7 @@ export function BranchMenu({
   const [open, setOpen] = useState(false);
   const [branches, setBranches] = useState<BranchSummary[]>([]);
   const [refused, setRefused] = useState<MergePreview | null>(null);
+  const [comparing, setComparing] = useState<string | null>(null);
   const [working, setWorking] = useState(false);
 
   const reload = useCallback(async () => {
@@ -136,6 +138,13 @@ export function BranchMenu({
                   </span>
                   <button
                     type="button"
+                    onClick={() => setComparing(branch.id)}
+                    className="rounded border border-slate-300 px-2 py-0.5 text-slate-700 hover:bg-slate-100"
+                  >
+                    Compare
+                  </button>
+                  <button
+                    type="button"
                     disabled={disabled || branch.ahead === 0}
                     onClick={() => void doMerge(branch.id)}
                     className="rounded border border-slate-300 px-2 py-0.5 text-slate-700 hover:bg-slate-100 disabled:opacity-40"
@@ -149,6 +158,14 @@ export function BranchMenu({
 
           {refused && <RefusalReport preview={refused} onForce={doMerge} />}
         </div>
+      )}
+
+      {comparing && (
+        <DiffView
+          constructId={construct.id}
+          againstId={comparing}
+          onClose={() => setComparing(null)}
+        />
       )}
     </div>
   );

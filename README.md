@@ -159,9 +159,9 @@ browser origins with `CORS_ORIGINS` on the backend.
 cd backend && uv run pytest
 ```
 
-360 tests: one per rebasing rule, explicit wraparound cases, GenBank round
+404 tests: one per rebasing rule, explicit wraparound cases, GenBank round
 trips against two real pUC19 records, reading-frame integrity, log merging,
-and the HTTP surface end to end.
+diffing, and the HTTP surface end to end.
 
 ---
 
@@ -185,6 +185,7 @@ and the HTTP surface end to end.
 | GET    | `/api/constructs/{id}/branches`     | branches and how far ahead each is |
 | POST   | `/api/constructs/{id}/merge/preview`| what a merge would do |
 | POST   | `/api/constructs/{id}/merge`        | rebase a branch's log onto this one |
+| GET    | `/api/constructs/{id}/diff`         | `?against={id}` — sequence, features, operations |
 
 `GET /{id}` returns `sequence`, `features`, `length`, `is_circular`,
 `gc_content`, `warnings`, `frame_issues`, `can_undo` and `can_redo`.
@@ -319,6 +320,53 @@ Endpoints: `POST /{id}/branch`, `GET /{id}/branches`,
 
 ---
 
+## Diffing two constructs
+
+![Comparing a branch against its parent](docs/diff.png)
+
+`GET /{id}/diff?against={other}` compares two derived states: which bases
+differ, which annotations moved, and which operations each side ran since the
+fork. It works on any pair, related or not.
+
+Three things make the difference between a diff that is correct and one that
+is readable.
+
+**`difflib`'s `autojunk` has to be off.** Its default heuristic discards
+elements appearing in more than 1% of positions — which, in a four-letter
+alphabet, is every base. Left on, a 2 kb pair differing by a single edit
+matches at 0.41 instead of 0.99. There is a test that pins this.
+
+**`difflib` aligns characters, not biology.** Replacing 50 bases with a run of
+G's leaves it free to match a stray G either side, reporting three changes
+where a reader wants one. Changes separated by fewer than ten matching bases
+are coalesced into a single block. The added/removed counts are taken *before*
+coalescing, so a base absorbed as context never counts as both.
+
+**A rotation is not a rearrangement.** `set_origin` rewrites every coordinate
+without touching the molecule, and a naive diff calls that a total rewrite. The
+comparison infers the rotation, normalises it, and reports it as
+`origin_shift`. Inferring it is subtler than it looks: anchoring on a probe
+from the start fails on repetitive sequence (a probe of `ACGTACGT…` matches at
+position 0 of a molecule rotated by any multiple of the period), and the single
+longest shared block fails when an edit near the middle splits the molecule and
+the larger half votes for a rotation off by the length of the edit. So blocks
+vote by length, the top few candidates are each scored, and the one that
+actually explains the two sequences best wins. The search only runs when a
+change touches an end, which is the only way material can cross the origin —
+so the common case, a branch and its parent sharing an origin, costs one
+alignment.
+
+### Shifted is not changed
+
+A 30 bp deletion near the origin moves every feature on the plasmid. Listing
+all of them as "changed" buries the one that actually was, so features whose
+coordinates moved while still covering the same bases are reported separately
+as `shifted`. On the screenshot's branch that turns eighteen rows of noise into
+one added feature, four genuinely truncated ones, and "14 shifted by edits
+upstream".
+
+---
+
 ## Import / export
 
 Import reads the first record of a FASTA or GenBank file (extra records are
@@ -354,6 +402,7 @@ backend/
       seqio.py                 Biopython import/export
       analysis.py              enzymes, ORFs, GC, reading frames
       merge.py                 rebasing one operation log onto another
+      diff.py                  comparing two derived states
     db/                        SQLAlchemy models + session
   tests/
     test_rebasing.py  test_circular.py     test_replay.py

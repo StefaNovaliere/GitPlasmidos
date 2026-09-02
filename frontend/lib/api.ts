@@ -3,6 +3,7 @@
 import type {
   BranchSummary,
   ConstructDetail,
+  ConstructDiff,
   ConstructSummary,
   EnzymesResponse,
   History,
@@ -157,6 +158,11 @@ export const api = {
         allow_frame_breaks: allowFrameBreaks,
       }),
     }),
+
+  diff: (id: string, against: string) =>
+    request<ConstructDiff>(
+      `/api/constructs/${id}/diff?against=${encodeURIComponent(against)}`,
+    ),
 
   exportUrl: (id: string, format: "genbank" | "fasta") =>
     `${API_BASE}/api/constructs/${id}/export?format=${format}`,

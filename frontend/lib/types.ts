@@ -144,3 +144,61 @@ export interface MergePreview {
   conflicts: MergeConflict[];
   new_frame_issues: FrameIssue[];
 }
+
+export interface DiffSide {
+  id: string;
+  name: string;
+  length: number;
+}
+
+export interface SequenceSegment {
+  op: "equal" | "insert" | "delete" | "replace";
+  left_start: number;
+  left_end: number;
+  right_start: number;
+  right_end: number;
+  left_seq: string;
+  right_seq: string;
+  truncated: boolean;
+}
+
+export interface SequenceDiff {
+  identical: boolean;
+  identity: number;
+  bases_added: number;
+  bases_removed: number;
+  /** Non-zero when one side's origin was moved by `set_origin`. */
+  origin_shift: number;
+  segments: SequenceSegment[];
+}
+
+export interface FeatureChange {
+  before: Feature;
+  after: Feature;
+  changed_fields: string[];
+}
+
+export interface FeatureDiff {
+  added: Feature[];
+  removed: Feature[];
+  /** Genuinely different: renamed, restranded, or over different bases. */
+  changed: FeatureChange[];
+  /** Merely displaced by an indel elsewhere, still over the same bases. */
+  shifted: FeatureChange[];
+  unchanged: number;
+}
+
+export interface OperationsDiff {
+  shared: number;
+  left_only: OperationRecord[];
+  right_only: OperationRecord[];
+}
+
+export interface ConstructDiff {
+  left: DiffSide;
+  right: DiffSide;
+  relationship: "branch" | "parent" | "unrelated";
+  sequence: SequenceDiff;
+  features: FeatureDiff;
+  operations: OperationsDiff;
+}

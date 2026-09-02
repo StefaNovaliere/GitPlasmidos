@@ -576,3 +576,115 @@ def test_undoing_below_the_fork_point_blocks_the_merge(client):
     resp = merge(client, cid, child["id"])
     assert resp.status_code == 409
     assert "fork" in resp.json()["detail"].lower()
+
+
+# --------------------------------------------------------------------------
+# diffing two constructs
+# --------------------------------------------------------------------------
+
+def diff(client, cid: str, against: str):
+    return client.get(f"/api/constructs/{cid}/diff?against={against}")
+
+
+def test_a_fresh_branch_differs_in_nothing(client):
+    parent = import_puc19(client)
+    child = branch_of(client, parent["id"])
+
+    body = diff(client, parent["id"], child["id"]).json()
+    assert body["relationship"] == "branch"
+    assert body["sequence"]["identical"] is True
+    assert body["sequence"]["identity"] == 1.0
+    assert body["features"]["unchanged"] == 18
+    assert body["features"]["added"] == body["features"]["removed"] == []
+    assert body["operations"]["left_only"] == body["operations"]["right_only"] == []
+
+
+def test_a_diff_localises_an_edit_and_names_the_features_it_hit(client):
+    parent = import_puc19(client)
+    cid = parent["id"]
+    child = branch_of(client, cid)
+    apply(client, child["id"], "delete", start=200, end=700)
+
+    body = diff(client, cid, child["id"]).json()
+    seq = body["sequence"]
+    assert seq["identical"] is False
+    assert seq["bases_removed"] == 500 and seq["bases_added"] == 0
+    (change,) = [s for s in seq["segments"] if s["op"] != "equal"]
+    assert change["op"] == "delete"
+    assert (change["left_start"], change["left_end"]) == (200, 700)
+
+    features = body["features"]
+    assert "lacZalpha" in {f["name"] for f in features["removed"]}
+    #  Features the cut crossed are changed ...
+    assert any(c["after"]["truncated"] for c in features["changed"])
+    #  ... while everything downstream merely moved, and is reported apart so
+    #  it does not bury the features that actually changed.
+    assert features["shifted"]
+    assert all(
+        c["changed_fields"] == ["start", "end"] for c in features["shifted"]
+    )
+    assert all(not c["after"]["truncated"] for c in features["shifted"])
+
+
+def test_the_diff_reports_which_operations_each_side_ran(client):
+    parent = import_puc19(client)
+    cid = parent["id"]
+    apply(client, cid, "delete", start=2400, end=2500)   # before the fork
+    child = branch_of(client, cid)
+
+    apply(client, cid, "insert", pos=0, seq="GGGG")
+    apply(client, child["id"], "delete", start=100, end=200)
+    apply(client, child["id"], "delete", start=300, end=400)
+
+    ops = diff(client, cid, child["id"]).json()["operations"]
+    assert ops["shared"] == 1
+    assert [o["kind"] for o in ops["left_only"]] == ["insert"]
+    assert [o["kind"] for o in ops["right_only"]] == ["delete", "delete"]
+
+
+def test_a_rotation_reads_as_an_origin_shift_not_a_rewrite(client):
+    parent = import_puc19(client)
+    cid = parent["id"]
+    child = branch_of(client, cid)
+    apply(client, child["id"], "set_origin", pos=1500)
+
+    body = diff(client, cid, child["id"]).json()
+    assert body["sequence"]["identical"] is True
+    assert body["sequence"]["origin_shift"] == 2686 - 1500
+    # The molecule is unchanged, so no feature should read as moved.
+    assert body["features"]["changed"] == []
+    assert body["features"]["unchanged"] == 18
+
+
+def test_unrelated_constructs_can_still_be_compared(client):
+    a = import_puc19(client)
+    b = client.post(
+        "/api/constructs", json={"name": "other", "sequence": "ACGT" * 50}
+    ).json()
+
+    body = diff(client, a["id"], b["id"]).json()
+    assert body["relationship"] == "unrelated"
+    assert body["operations"]["shared"] == 0
+    assert body["sequence"]["identical"] is False
+
+
+def test_the_diff_is_symmetric_about_which_side_is_added(client):
+    parent = import_puc19(client)
+    cid = parent["id"]
+    child = branch_of(client, cid)
+    apply(client, child["id"], "insert", pos=500, seq="TTTTTTTTTT")
+
+    forward = diff(client, cid, child["id"]).json()["sequence"]
+    backward = diff(client, child["id"], cid).json()["sequence"]
+    assert forward["bases_added"] == backward["bases_removed"] == 10
+    assert forward["bases_removed"] == backward["bases_added"] == 0
+
+
+def test_diffing_a_construct_against_itself_is_422(client):
+    cid = import_puc19(client)["id"]
+    assert diff(client, cid, cid).status_code == 422
+
+
+def test_diffing_against_something_that_does_not_exist_is_404(client):
+    cid = import_puc19(client)["id"]
+    assert diff(client, cid, "nope").status_code == 404

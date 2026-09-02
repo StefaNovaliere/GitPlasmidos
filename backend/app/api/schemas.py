@@ -167,3 +167,67 @@ class MergeRequest(BaseModel):
     #: silently shipping a dead protein is the failure this project exists to
     #: prevent, but deliberately building a frameshift mutant is real work.
     allow_frame_breaks: bool = False
+
+
+class DiffSide(BaseModel):
+    id: str
+    name: str
+    length: int
+
+
+class SequenceSegmentOut(BaseModel):
+    """One block of the alignment: equal, insert, delete or replace."""
+
+    op: str
+    left_start: int
+    left_end: int
+    right_start: int
+    right_end: int
+    #: Only carried for changed blocks, and capped.
+    left_seq: str = ""
+    right_seq: str = ""
+    truncated: bool = False
+
+
+class SequenceDiffOut(BaseModel):
+    identical: bool
+    identity: float
+    bases_added: int
+    bases_removed: int
+    #: How far the right molecule was rotated to line its origin up with the
+    #: left's. Non-zero means somebody ran set_origin on one side.
+    origin_shift: int
+    segments: list[SequenceSegmentOut]
+
+
+class FeatureChangeOut(BaseModel):
+    before: Feature
+    after: Feature
+    changed_fields: list[str]
+
+
+class FeatureDiffOut(BaseModel):
+    added: list[Feature] = Field(default_factory=list)
+    removed: list[Feature] = Field(default_factory=list)
+    #: Genuinely different: renamed, restranded, or over different bases.
+    changed: list[FeatureChangeOut] = Field(default_factory=list)
+    #: Merely displaced by an indel elsewhere, still over the same bases.
+    shifted: list[FeatureChangeOut] = Field(default_factory=list)
+    unchanged: int = 0
+
+
+class OperationsDiffOut(BaseModel):
+    #: Operations both sides inherited from their common ancestor.
+    shared: int
+    left_only: list[OperationOut] = Field(default_factory=list)
+    right_only: list[OperationOut] = Field(default_factory=list)
+
+
+class ConstructDiffOut(BaseModel):
+    left: DiffSide
+    right: DiffSide
+    #: branch | parent | unrelated, from the left's point of view.
+    relationship: str
+    sequence: SequenceDiffOut
+    features: FeatureDiffOut
+    operations: OperationsDiffOut
