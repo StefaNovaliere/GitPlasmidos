@@ -754,3 +754,41 @@ def test_the_preview_carries_the_features_as_the_merge_would_rebase_them(client)
     )
     # +4 from the parent's insert, -100 from the branch's delete.
     assert (bla["start"], bla["end"]) == (1625 + 4 - 100, 2486 + 4 - 100)
+
+
+def test_merging_the_same_branch_twice_does_not_apply_it_twice(client):
+    """A branch that has been merged is no longer ahead of its parent."""
+    cid = import_puc19(client)["id"]
+    child = branch_of(client, cid)
+    apply(client, child["id"], "insert", pos=500, seq="TTTTTTTTTT")
+
+    first = merge(client, cid, child["id"])
+    assert first.status_code == 200
+    assert first.json()["length"] == 2696
+
+    listed = client.get(f"/api/constructs/{cid}/branches").json()
+    assert listed[0]["ahead"] == 0, "a merged branch is not ahead any more"
+
+    second = merge(client, cid, child["id"])
+    assert client.get(f"/api/constructs/{cid}").json()["length"] == 2696, (
+        "the branch's edit was applied a second time"
+    )
+    assert second.status_code in (200, 409)
+
+
+def test_a_branch_can_keep_working_after_being_merged(client):
+    """Only the work done since the last merge crosses over."""
+    cid = import_puc19(client)["id"]
+    child = branch_of(client, cid)
+
+    apply(client, child["id"], "insert", pos=500, seq="AAAA")
+    assert merge(client, cid, child["id"]).status_code == 200
+    assert client.get(f"/api/constructs/{cid}").json()["length"] == 2690
+
+    apply(client, child["id"], "insert", pos=800, seq="GG")
+    assert client.get(f"/api/constructs/{cid}/branches").json()[0]["ahead"] == 1
+
+    assert merge(client, cid, child["id"]).status_code == 200
+    assert client.get(f"/api/constructs/{cid}").json()["length"] == 2692
+    history = client.get(f"/api/constructs/{cid}/history").json()
+    assert [o["kind"] for o in history["operations"]] == ["insert", "insert"]

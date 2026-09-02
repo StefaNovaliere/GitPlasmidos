@@ -44,6 +44,28 @@ export default function HomePage() {
     }
   };
 
+  const remove = async (construct: ConstructSummary) => {
+    const branches = (constructs ?? []).filter(
+      (c) => c.parent_id === construct.id,
+    );
+    const warning = branches.length
+      ? `Delete “${construct.name}”? Its ${branches.length} branch${
+          branches.length === 1 ? "" : "es"
+        } will be left without a parent.`
+      : `Delete “${construct.name}”? Its edit history goes with it.`;
+    if (!window.confirm(warning)) return;
+
+    setBusy(true);
+    try {
+      await api.deleteConstruct(construct.id);
+      await reload();
+    } catch (err) {
+      push(err instanceof ApiError ? err.message : String(err), "error");
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const createBlank = async () => {
     setBusy(true);
     try {
@@ -198,12 +220,15 @@ export default function HomePage() {
         )}
         <ul className="divide-y divide-slate-100">
           {ordered?.map((construct) => (
-            <li key={construct.id}>
+            <li
+              key={construct.id}
+              className={`group flex items-start hover:bg-slate-50 ${
+                construct.parent_id ? "border-l-2 border-l-slate-200 pl-2" : ""
+              }`}
+            >
               <Link
                 href={`/constructs/${construct.id}`}
-                className={`block px-4 py-2.5 hover:bg-slate-50 ${
-                  construct.parent_id ? "border-l-2 border-l-slate-200 pl-6" : ""
-                }`}
+                className="min-w-0 flex-1 px-4 py-2.5"
               >
                 <span className="flex items-baseline gap-3">
                   <span className="flex-1 truncate text-sm font-medium text-slate-800">
@@ -229,6 +254,16 @@ export default function HomePage() {
                   </span>
                 )}
               </Link>
+              <button
+                type="button"
+                disabled={busy}
+                onClick={() => void remove(construct)}
+                title={`Delete ${construct.name}`}
+                aria-label={`Delete ${construct.name}`}
+                className="mr-2 mt-2 shrink-0 rounded px-2 py-1 text-sm text-slate-300 opacity-0 hover:bg-red-50 hover:text-red-600 focus:opacity-100 disabled:opacity-20 group-hover:opacity-100"
+              >
+                ×
+              </button>
             </li>
           ))}
         </ul>

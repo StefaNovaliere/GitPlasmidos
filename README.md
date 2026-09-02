@@ -154,8 +154,11 @@ browser origins with `CORS_ORIGINS` on the backend.
 ### Seed the demo scenarios
 
 ```bash
-cd backend && uv run python -m app.seed      # --reset to start clean
+cd backend && uv run python -m app.seed      # --reset to start over
 ```
+
+Idempotent: running it again restores whatever is missing and leaves the rest
+alone. Constructs can be deleted from the listing, and re-seeded from there.
 
 ![The home page after seeding](docs/home.png)
 
@@ -189,7 +192,7 @@ anything.
 cd backend && uv run pytest
 ```
 
-420 tests: one per rebasing rule, explicit wraparound cases, GenBank round
+424 tests: one per rebasing rule, explicit wraparound cases, GenBank round
 trips against two real pUC19 records, reading-frame integrity, log merging,
 diffing, the seeded scenarios, and the HTTP surface end to end.
 
@@ -371,6 +374,11 @@ Operations whose range crosses the origin are decomposed the way `replay()`
 applies them - rotate the range to the front, do the linear thing, rotate back -
 so a rotation on one side carries the other side's edit around the molecule
 without a special case.
+
+A merged branch stops being ahead of its parent. The branch records how many
+of its own operations have crossed over, and a second merge carries only the
+work done since the first — without that, merging twice replays the branch's
+edits on top of themselves and quietly corrupts the construct.
 
 Endpoints: `POST /{id}/branch`, `GET /{id}/branches`,
 `POST /{id}/merge/preview` and `POST /{id}/merge`.

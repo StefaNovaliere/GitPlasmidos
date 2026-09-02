@@ -49,6 +49,10 @@ class Construct(Base):
         ForeignKey("constructs.id", ondelete="SET NULL"), nullable=True
     )
     fork_index: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    #: How many of this branch's own operations have already been merged into
+    #: its parent. Without it a branch stays "ahead" after a merge and merging
+    #: again replays its edits on top of themselves.
+    merged_ops: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, default=utcnow, onupdate=utcnow

@@ -479,6 +479,17 @@ def _live(construct: Construct) -> list[OperationRow]:
     return [r for r in construct.operations if not r.reverted]
 
 
+def _merged_boundary(branch: Construct) -> int:
+    """Index into the branch's live log up to which its parent is caught up."""
+    fork = branch.fork_index or 0
+    return min(fork + (branch.merged_ops or 0), len(_live(branch)))
+
+
+def _ahead(branch: Construct) -> int:
+    """Operations the branch has that its parent does not."""
+    return max(0, len(_live(branch)) - _merged_boundary(branch))
+
+
 @router.post(
     "/{construct_id}/branch",
     response_model=ConstructDetail,
@@ -533,7 +544,7 @@ def list_branches(construct_id: str, db: DbSession) -> list[dict]:
                 "id": branch.id,
                 "name": branch.name,
                 "length": state.length,
-                "ahead": max(0, len(_live(branch)) - (branch.fork_index or 0)),
+                "ahead": _ahead(branch),
                 "created_at": branch.created_at,
                 "updated_at": branch.updated_at,
             }
@@ -622,7 +633,9 @@ def _prepare_merge(target: Construct, branch: Construct):
         base_features,
         ancestor_ops,
         _domain_ops(target_live[fork:]),
-        _domain_ops(branch_live[fork:]),
+        # Skip what a previous merge already carried across, or the branch's
+        # edits get replayed on top of themselves.
+        _domain_ops(branch_live[_merged_boundary(branch):]),
         is_circular=target.is_circular,
         construct_id=target.id,
     )
@@ -671,6 +684,7 @@ def merge_branch(construct_id: str, body: MergeRequest, db: DbSession) -> dict:
                 reverted=False,
             )
         )
+    branch.merged_ops = len(_live(branch)) - (branch.fork_index or 0)
     target.updated_at = utcnow()
     db.commit()
     db.refresh(target)

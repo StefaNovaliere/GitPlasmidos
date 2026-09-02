@@ -69,6 +69,24 @@ def test_reset_clears_what_was_there_before(db):
     assert len(db.scalars(select(Construct)).all()) == 4
 
 
+def test_seeding_twice_does_not_duplicate_anything(db):
+    seed(db)
+    again = seed(db)
+    assert again == []
+    assert len(db.scalars(select(Construct)).all()) == 4
+
+
+def test_seeding_restores_only_what_is_missing(db):
+    seed(db)
+    everything = by_name(db)
+    db.delete(everything["pUC19 · MCS swap"])
+    db.commit()
+
+    restored = seed(db)
+    assert [c.name for c in restored] == ["pUC19 · MCS swap"]
+    assert len(db.scalars(select(Construct)).all()) == 4
+
+
 def test_every_seeded_operation_actually_applies(db):
     """Strict replay raises on any stored operation that no longer fits.
 

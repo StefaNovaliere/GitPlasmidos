@@ -180,26 +180,38 @@ def _persist(
 
 
 def seed(db: Session, *, reset: bool = False) -> list[Construct]:
-    """Create the demo constructs. Returns everything it made."""
+    """Create the demo constructs, skipping any that are already there.
+
+    Idempotent on purpose: running it twice should leave you with the same
+    four scenarios, not eight. ``reset`` deletes everything first, which is
+    what you want after playing with the demo.
+    """
     if reset:
         for construct in db.scalars(select(Construct)).all():
             db.delete(construct)
         db.flush()
 
     record = parse_sequence_file(PUC19.read_text(), PUC19.name)
+    existing = {c.name: c for c in db.scalars(select(Construct)).all()}
     created: list[Construct] = []
 
     for scenario in SCENARIOS:
-        parent = _persist(
-            db,
-            name=scenario.name,
-            description=scenario.description,
-            sequence=record.sequence,
-            features=record.features,
-            operations=scenario.operations,
-        )
-        created.append(parent)
+        # Reuse the parent when it is already there, so a branch deleted on
+        # its own is restored rather than skipped along with its parent.
+        parent = existing.get(scenario.name)
+        if parent is None:
+            parent = _persist(
+                db,
+                name=scenario.name,
+                description=scenario.description,
+                sequence=record.sequence,
+                features=record.features,
+                operations=scenario.operations,
+            )
+            created.append(parent)
         for child in scenario.branches:
+            if child.name in existing:
+                continue
             fork = (
                 len(scenario.operations) if child.fork_at is None else child.fork_at
             )
@@ -232,6 +244,9 @@ def main() -> None:
     init_db()
     with SessionLocal() as db:
         created = seed(db, reset=args.reset)
+        if not created:
+            print("Everything is already seeded. Use --reset to start over.")
+            return
         for construct in created:
             state = replay(
                 construct.base_sequence,
