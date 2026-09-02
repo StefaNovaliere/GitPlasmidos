@@ -14,7 +14,7 @@ from app.db.models import Base
 from app.db.session import get_db
 from app.main import app
 
-DATA = Path(__file__).parent / "data"
+DATA = Path(__file__).parents[1] / "data"
 PUC19 = DATA / "puc19_annotated.gb"
 
 

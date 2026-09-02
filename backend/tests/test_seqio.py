@@ -17,7 +17,7 @@ from app.domain.seqio import (
 )
 from tests.conftest import feat, ops
 
-DATA = Path(__file__).parent / "data"
+DATA = Path(__file__).parents[1] / "data"
 PUC19 = DATA / "puc19_annotated.gb"
 PUC19_NCBI = DATA / "puc19_M77789.gb"
 

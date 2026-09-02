@@ -20,7 +20,7 @@ from app.domain.replay import replay
 from app.domain.seqio import parse_sequence_file
 from tests.conftest import feat, ops
 
-DATA = Path(__file__).parent / "data"
+DATA = Path(__file__).parents[1] / "data"
 
 
 def state(sequence: str, features=(), *, is_circular: bool = True):

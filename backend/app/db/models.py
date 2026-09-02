@@ -36,6 +36,9 @@ class Construct(Base):
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
+    #: Free text: the GenBank DEFINITION line on import, or a note explaining
+    #: what a construct is for.
+    description: Mapped[str] = mapped_column(Text, default="", nullable=False)
     is_circular: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     base_sequence: Mapped[str] = mapped_column(Text, default="", nullable=False)
     base_features: Mapped[list] = mapped_column(JSON, default=list, nullable=False)

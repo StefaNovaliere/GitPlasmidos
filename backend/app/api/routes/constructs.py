@@ -147,6 +147,7 @@ def _detail(construct: Construct, state: ConstructState | None = None) -> dict:
     return {
         "id": construct.id,
         "name": construct.name,
+        "description": construct.description or "",
         "parent_id": construct.parent_id,
         "is_circular": construct.is_circular,
         "sequence": state.sequence,
@@ -188,6 +189,7 @@ def create_construct(body: ConstructCreate, db: DbSession) -> dict:
     construct = Construct(
         id=_new_id(),
         name=body.name.strip() or "Untitled construct",
+        description=body.description.strip(),
         is_circular=body.is_circular,
         base_sequence=sequence,
         base_features=[f.model_dump() for f in body.features],
@@ -221,6 +223,8 @@ async def import_construct(
     construct = Construct(
         id=_new_id(),
         name=(name or record.name).strip()[:255] or "imported",
+        # GenBank's DEFINITION line, which we used to throw away.
+        description=record.description,
         # FASTA carries no topology; a plasmid editor defaults to circular.
         is_circular=True if record.is_circular is None else record.is_circular,
         base_sequence=record.sequence,
@@ -243,6 +247,7 @@ def list_constructs(db: DbSession) -> list[dict]:
             {
                 "id": construct.id,
                 "name": construct.name,
+                "description": construct.description or "",
                 "parent_id": construct.parent_id,
                 "is_circular": construct.is_circular,
                 "length": state.length,
@@ -488,6 +493,7 @@ def create_branch(construct_id: str, body: BranchCreate, db: DbSession) -> dict:
     branch = Construct(
         id=_new_id(),
         name=(body.name.strip() or f"{parent.name} (branch)")[:255],
+        description=body.description.strip(),
         is_circular=parent.is_circular,
         base_sequence=parent.base_sequence,
         base_features=list(parent.base_features or []),

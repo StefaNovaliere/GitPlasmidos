@@ -10,7 +10,7 @@ from app.domain.analysis import find_orfs, find_restriction_sites, gc_content
 from app.domain.circular import revcomp, rotate_sequence
 from app.domain.seqio import parse_sequence_file
 
-DATA = Path(__file__).parent / "data"
+DATA = Path(__file__).parents[1] / "data"
 
 
 @pytest.fixture(scope="module")

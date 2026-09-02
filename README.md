@@ -146,12 +146,42 @@ pnpm install
 pnpm dev
 ```
 
-Then open <http://localhost:3000>, import
-`backend/tests/data/puc19_annotated.gb`, and you should see pUC19 at 2686 bp
-with its 18 features.
+Then open <http://localhost:3000>.
 
 Point the UI at a different API with `NEXT_PUBLIC_API_BASE_URL`; allow extra
 browser origins with `CORS_ORIGINS` on the backend.
+
+### Seed the demo scenarios
+
+```bash
+cd backend && uv run python -m app.seed      # --reset to start clean
+```
+
+![The home page after seeding](docs/home.png)
+
+Three things to look at, in order:
+
+1. **pUC19** — 2,686 bp, 18 features, its single cutters in the enzyme panel.
+   All derived from an operation log that is empty.
+2. **pUC19 → MCS swap** — on pUC19, *Branches → Compare*. One replaced block,
+   one added annotation, four genuinely truncated features, and fourteen that
+   merely shifted, reported apart.
+3. **pUC19 · AmpR +Phe → +Cys** — *Branches → Merge*, and watch it be refused.
+
+The third is the one to read closely. Two teams each insert a single codon
+into the beta-lactamase gene at the same site: one adds a phenylalanine, the
+other a cysteine. Each branch alone yields a full-length 287-residue protein
+with no reading-frame problem. Their inserts are single points, so they cannot
+overlap, and both are 3 bp, so neither shifts the frame — a text merge, or a
+CRDT over the sequence, reports success.
+
+Merged, the two codons read across a codon boundary as a stop, and AmpR dies
+at residue 163 of 289. The merge is refused with a 409 naming the codon.
+
+That pair was found by search rather than by hand — `app/seed.py` records the
+positions, and `tests/test_seed.py` asserts that each branch is clean and that
+merging them still breaks `bla`, so the demo cannot quietly stop demonstrating
+anything.
 
 ### Tests
 
@@ -159,9 +189,9 @@ browser origins with `CORS_ORIGINS` on the backend.
 cd backend && uv run pytest
 ```
 
-404 tests: one per rebasing rule, explicit wraparound cases, GenBank round
+411 tests: one per rebasing rule, explicit wraparound cases, GenBank round
 trips against two real pUC19 records, reading-frame integrity, log merging,
-diffing, and the HTTP surface end to end.
+diffing, the seeded scenarios, and the HTTP surface end to end.
 
 ---
 
@@ -404,14 +434,15 @@ backend/
       merge.py                 rebasing one operation log onto another
       diff.py                  comparing two derived states
     db/                        SQLAlchemy models + session
+    seed.py                    the demo scenarios
+  data/                        two real pUC19 GenBank records
   tests/
-    test_rebasing.py  test_circular.py     test_replay.py
-    test_seqio.py     test_analysis.py     test_api.py
-    test_reading_frame.py
-    data/                      two real pUC19 GenBank records
+    test_rebasing.py  test_circular.py  test_replay.py  test_seqio.py
+    test_analysis.py  test_reading_frame.py  test_merge.py  test_diff.py
+    test_seed.py      test_api.py
 frontend/
   app/constructs/[id]/page.tsx the editor
-  app/page.tsx                 listing + import
+  app/page.tsx                 what this is, the scenarios, the listing
   components/                  Toolbar, FeatureList, HistoryPanel,
                                EnzymePanel, SeqVizPane, Toasts
   lib/                         api.ts, types.ts, sequence.ts, useConstruct.ts
@@ -435,7 +466,7 @@ frontend/
 - **`create-next-app` installs Next 16**; pinned back to 15 as specified.
 - **pUC19 fixtures came from GitHub, not NCBI.** `eutils.ncbi.nlm.nih.gov` is
   blocked by this environment's egress policy, so accession L09136 could not be
-  fetched directly. `backend/tests/data/` holds two equivalent 2686 bp pUC19
+  fetched directly. `backend/data/` holds two equivalent 2686 bp pUC19
   records mirrored from public repositories; see the README there.
 - **Optimistic UI is sequence-only.** Edits show the predicted sequence
   immediately and roll back if the POST fails, but feature positions come from

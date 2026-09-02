@@ -21,7 +21,7 @@ from app.domain.replay import replay
 from app.domain.seqio import parse_sequence_file
 from tests.conftest import feat, ops
 
-DATA = Path(__file__).parent / "data"
+DATA = Path(__file__).parents[1] / "data"
 
 #  ATG + 8 sense codons + TAA  ->  30 bp, protein "MKKKKKKKK*"
 CDS = "ATG" + "AAA" * 8 + "TAA"

@@ -43,6 +43,7 @@ export interface FrameIssue {
 export interface ConstructDetail {
   id: string;
   name: string;
+  description: string;
   parent_id: string | null;
   is_circular: boolean;
   sequence: string;
@@ -64,6 +65,7 @@ export interface ImportResult extends ConstructDetail {
 export interface ConstructSummary {
   id: string;
   name: string;
+  description: string;
   parent_id: string | null;
   is_circular: boolean;
   length: number;

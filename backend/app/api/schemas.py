@@ -13,6 +13,7 @@ class ConstructCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     name: str = Field(default="Untitled construct", max_length=255)
+    description: str = ""
     sequence: str = ""
     is_circular: bool = True
     features: list[Feature] = Field(default_factory=list)
@@ -21,6 +22,7 @@ class ConstructCreate(BaseModel):
 class ConstructSummary(BaseModel):
     id: str
     name: str
+    description: str = ""
     parent_id: str | None = None
     is_circular: bool
     length: int
@@ -45,6 +47,7 @@ class FrameIssueOut(BaseModel):
 class ConstructDetail(BaseModel):
     id: str
     name: str
+    description: str = ""
     parent_id: str | None = None
     is_circular: bool
     sequence: str
@@ -124,6 +127,7 @@ class BranchCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     name: str = Field(default="", max_length=255)
+    description: str = ""
 
 
 class BranchSummary(BaseModel):
