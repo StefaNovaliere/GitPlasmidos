@@ -12,6 +12,7 @@ point of the project is that derived state is never written.
 from __future__ import annotations
 
 import argparse
+import textwrap
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -21,8 +22,9 @@ from sqlalchemy.orm import Session
 
 from app.db.models import Construct, OperationRow
 from app.db.session import SessionLocal, engine, init_db
-from app.domain.models import Feature, Operation
+from app.domain.models import ConstructState, Feature, Operation
 from app.domain.replay import replay
+from app.domain.rules import RuleSet, lint, load_rules, suppression_payload
 from app.domain.seqio import parse_sequence_file
 
 DATA = Path(__file__).resolve().parents[1] / "data"
@@ -36,11 +38,44 @@ AMPR_SITE = 2001
 AMPR_EDIT_A = "AAT"  # adds a phenylalanine
 AMPR_EDIT_B = "CAG"  # adds a cysteine
 
+#: Wild-type pUC19 trips ``rbs-atg-spacing`` on both of its genes: neither
+#: lacZ-alpha nor bla carries the strong AGGAGG consensus, and both are
+#: transcribed anyway. The rule is not wrong about what it measures - AGGAGG is
+#: the strong form and it is genuinely absent - so it stays an ``error``. What
+#: is a judgement is that *this* molecule is fine regardless, and a judgement
+#: belongs in the log where somebody can read it, undo it, or disagree with it.
+#:
+#: So the demo opens on "2 findings, 2 suppressed" rather than on two red
+#: errors that make the linter look broken. The infrastructure exists exactly
+#: because rules are imperfect; hiding that would be the wrong lesson.
+WILD_TYPE_REASON = (
+    "El consenso AGGAGG estricto es demasiado rígido para el wild-type "
+    "pUC19. Mantener suprimido."
+)
+#: Only this rule is pre-suppressed. A different rule firing on the wild type
+#: is news, and news deserves somebody's decision rather than a canned one.
+WILD_TYPE_RULE = "rbs-atg-spacing"
+
+#: A ribosome binding site tuned to sit 8 nt from the lacZ-alpha start codon,
+#: comfortably inside the 5-13 nt window the rule pack cites. lacZ-alpha is on
+#: the minus strand, so "upstream" is *higher* coordinates and the site reads
+#: CCTCCT on the plus strand — AGGAGG as the gene itself reads it.
+LACZ_RBS_SITE = 477
+LACZ_RBS = "CCTCCT"
+#: Three bases each, dropped into the spacer between the site and the ATG.
+#: 8 nt becomes 11 either way, still inside the window; together it is 14.
+LACZ_SPACER_A = (473, "TTT")
+LACZ_SPACER_B = (471, "AAA")
+
 
 @dataclass
 class Scenario:
     name: str
     description: str
+    #: What to do on this construct in a live demo. Constructs that carry one
+    #: are printed as numbered steps with their URL, so the demo is a list of
+    #: links rather than a memory test.
+    demo: str = ""
     operations: list[tuple[str, dict]] = field(default_factory=list)
     branches: list[Scenario] = field(default_factory=list)
     #: How many of the parent's operations this branch inherits. ``None``
@@ -57,6 +92,16 @@ SCENARIOS = [
             "The reference cloning vector, 2,686 bp. Start here: the circular "
             "map, the feature list, and the single cutters in the enzyme "
             "panel are all derived from the operation log, which is empty."
+        ),
+        demo=(
+            "Nothing to click yet. The circular map, the 18 features and the "
+            "single cutters in the enzyme panel are all derived from the "
+            "operation log — which holds exactly two entries, and neither is "
+            "an edit. Both genes are missing the strong AGGAGG consensus, the "
+            "rule is right about that, and somebody decided this molecule is "
+            "fine anyway. The panel reads \"2 findings, 2 suppressed\" and the "
+            "reason is in the history, where it can be read, undone or "
+            "disagreed with."
         ),
         branches=[
             Scenario(
@@ -99,6 +144,12 @@ SCENARIOS = [
             "stop codon and AmpR dies at residue 163."
         ),
         operations=[("insert", {"pos": AMPR_SITE, "seq": AMPR_EDIT_A})],
+        demo=(
+            "Branches → Merge \"pUC19 · AmpR +Cys\". Refused: the two clean "
+            "codons read across a boundary as a stop, and beta-lactamase dies "
+            "at residue 163 of 289. The dialog shows all three reading frames "
+            "as codons."
+        ),
         branches=[
             Scenario(
                 name="pUC19 · AmpR +Cys",
@@ -114,7 +165,63 @@ SCENARIOS = [
             ),
         ],
     ),
+    Scenario(
+        name="pUC19 · RBS spacer (lab A)",
+        description=(
+            "The 5' untranslated region of lacZ-alpha, with a strong ribosome "
+            "binding site 8 nt from the start codon, and three bases added to "
+            "the spacer. Still inside the 5-13 nt window, so the construct is "
+            "clean. Open Branches → Merge to pull in the other lab's equally "
+            "clean three bases."
+        ),
+        operations=[
+            ("insert", {"pos": LACZ_RBS_SITE, "seq": LACZ_RBS}),
+            ("insert", {"pos": LACZ_SPACER_A[0], "seq": LACZ_SPACER_A[1]}),
+        ],
+        demo=(
+            "Branches → Merge \"pUC19 · RBS spacer (lab B)\". Refused by a "
+            "design rule this time: 8 + 3 + 3 puts the Shine-Dalgarno 14 nt "
+            "from the ATG, outside the window Shine and Dalgarno measured. "
+            "Write a reason and merge anyway — it lands in the history as an "
+            "operation, not as a flag."
+        ),
+        branches=[
+            Scenario(
+                name="pUC19 · RBS spacer (lab B)",
+                description=(
+                    "The other lab's three bases, added at a different point "
+                    "in the same spacer. Also clean on its own: 11 nt is a "
+                    "perfectly good distance."
+                ),
+                # Forked after the site was tuned, before either edit: the two
+                # spacer edits are concurrent, which is the whole point.
+                fork_at=1,
+                operations=[
+                    ("insert", {"pos": LACZ_SPACER_B[0], "seq": LACZ_SPACER_B[1]})
+                ],
+            ),
+        ],
+    ),
 ]
+
+
+def wild_type_decisions(
+    sequence: str, features: list[Feature], pack: RuleSet
+) -> list[tuple[str, dict]]:
+    """The two decisions every seeded construct starts from.
+
+    Computed, never written by hand: a suppression carries the digest of the
+    window its rule read, so it can only be built by asking the engine what it
+    just looked at. That also means the seed cannot drift from the pack — if
+    the rule changes, these are recorded against the rule as it actually is,
+    and if it stops firing they simply are not created.
+    """
+    state = ConstructState(sequence=sequence, features=features, is_circular=True)
+    return [
+        ("suppress_finding", suppression_payload(finding, WILD_TYPE_REASON))
+        for finding in lint(pack, state)
+        if finding.blocking and finding.rule_id == WILD_TYPE_RULE
+    ]
 
 
 def _new_id() -> str:
@@ -192,6 +299,9 @@ def seed(db: Session, *, reset: bool = False) -> list[Construct]:
         db.flush()
 
     record = parse_sequence_file(PUC19.read_text(), PUC19.name)
+    # Shared prehistory: every scenario is wild-type pUC19 plus its own edits,
+    # so the two standing decisions about the wild type belong to all of them.
+    prelude = wild_type_decisions(record.sequence, record.features, load_rules())
     existing = {c.name: c for c in db.scalars(select(Construct)).all()}
     created: list[Construct] = []
 
@@ -206,13 +316,15 @@ def seed(db: Session, *, reset: bool = False) -> list[Construct]:
                 description=scenario.description,
                 sequence=record.sequence,
                 features=record.features,
-                operations=scenario.operations,
+                operations=prelude + scenario.operations,
             )
             created.append(parent)
         for child in scenario.branches:
             if child.name in existing:
                 continue
-            fork = (
+            # ``fork_at`` counts the scenario's own operations; the prelude is
+            # ancestry, and every branch inherits all of it.
+            fork = len(prelude) + (
                 len(scenario.operations) if child.fork_at is None else child.fork_at
             )
             created.append(
@@ -223,13 +335,40 @@ def seed(db: Session, *, reset: bool = False) -> list[Construct]:
                     sequence=record.sequence,
                     features=record.features,
                     # A branch carries the shared history, then its own edits.
-                    operations=scenario.operations[:fork] + child.operations,
+                    operations=(prelude + scenario.operations)[:fork]
+                    + child.operations,
                     parent=parent,
                     fork_index=fork,
                 )
             )
     db.commit()
     return created
+
+
+def run_sheet(db: Session, base_url: str) -> list[str]:
+    """The demo, as a list of links and one instruction each.
+
+    A live demo typed from memory is a demo that goes wrong in front of the
+    person you wanted to impress. Every scenario that is worth showing carries
+    the sentence describing what to click, and this prints them in order with
+    the URL already resolved.
+    """
+    by_name = {c.name: c for c in db.scalars(select(Construct)).all()}
+    lines: list[str] = []
+    step = 0
+    for scenario in SCENARIOS:
+        construct = by_name.get(scenario.name)
+        if not scenario.demo or construct is None:
+            continue
+        step += 1
+        lines.append(f"  {step}. {scenario.name}")
+        lines.append(f"     {base_url.rstrip('/')}/constructs/{construct.id}")
+        lines.extend(
+            f"     {line}"
+            for line in textwrap.wrap(scenario.demo, width=72)
+        )
+        lines.append("")
+    return lines
 
 
 def main() -> None:
@@ -239,14 +378,16 @@ def main() -> None:
         action="store_true",
         help="delete every existing construct first",
     )
+    parser.add_argument(
+        "--url",
+        default="http://localhost:3000",
+        help="where the frontend is served, for the printed demo links",
+    )
     args = parser.parse_args()
 
     init_db()
     with SessionLocal() as db:
         created = seed(db, reset=args.reset)
-        if not created:
-            print("Everything is already seeded. Use --reset to start over.")
-            return
         for construct in created:
             state = replay(
                 construct.base_sequence,
@@ -264,12 +405,20 @@ def main() -> None:
                 is_circular=True,
             )
             mark = "  └─ " if construct.parent_id else ""
-            edits = len(construct.operations)
+            # "operations", not "edits": a suppression is one of these and it
+            # edits nothing.
+            count = len(construct.operations)
             print(
                 f"{mark}{construct.name}  {state.length:,} bp, "
-                f"{edits} edit{'' if edits == 1 else 's'}  {construct.id}"
+                f"{count} operation{'' if count == 1 else 's'}  {construct.id}"
             )
-    print(f"\nSeeded {len(created)} constructs into {engine.url}.")
+        if created:
+            print(f"\nSeeded {len(created)} constructs into {engine.url}.")
+        else:
+            print("Everything is already seeded. Use --reset to start over.")
+
+        print("\nDemo, in order:\n")
+        print("\n".join(run_sheet(db, args.url)))
 
 
 if __name__ == "__main__":

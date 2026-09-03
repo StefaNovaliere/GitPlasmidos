@@ -272,6 +272,38 @@ def test_a_forbidden_rule_has_no_absence_to_report():
         )
 
 
+#: ATGAAAGGGCCCTAA, as it appears on the plus strand of a minus-strand gene.
+MINUS_CDS = "TTAGGGCCCTTTCAT"
+
+
+def minus_strand_state(upstream: str):
+    """A minus-strand CDS at 20..35, with ``upstream`` written just past it."""
+    return state(
+        ("T" * 20 + MINUS_CDS + upstream).ljust(80, "T"),
+        [feat(20, 35, id="c", kind="CDS", name="g", strand=-1)],
+    )
+
+
+def test_a_motif_is_read_on_the_strand_its_gene_reads():
+    """The direction bug that does not announce itself.
+
+    A ribosome binding site for a minus-strand gene reads AGGAGG on the gene's
+    own strand, which is CCTCCT in the plus-strand text. Matching the literal
+    AGGAGG there instead accepts exactly the sequences that cannot work and
+    reports the ones that can - on half the genes in the file, silently.
+    """
+    same = rule(look={"motif": "AGGAGG", "strand": "same"})
+    assert evaluate(same, minus_strand_state("TTTTTTTCCTCCTTTTT")) == []
+    (missing,) = evaluate(same, minus_strand_state("TTTTTTTAGGAGGTTTT"))
+    assert missing.rule_id == "demo-rule"
+
+
+def test_an_opposite_strand_motif_is_the_mirror_of_that():
+    opposite = rule(look={"motif": "AGGAGG", "strand": "opposite"})
+    assert evaluate(opposite, minus_strand_state("TTTTTTTAGGAGGTTTT")) == []
+    assert len(evaluate(opposite, minus_strand_state("TTTTTTTCCTCCTTTTT"))) == 1
+
+
 def test_a_forbidden_feature_is_reported_where_it_sits():
     forbidden = rule(
         severity="warning",
