@@ -3,8 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 
 import { DiffView } from "@/components/DiffView";
-import { MergeConflictView } from "@/components/MergeConflictView";
-import { MergeRuleBlock } from "@/components/MergeRuleBlock";
+import { MergeBlockedView } from "@/components/MergeBlockedView";
 import { ApiError, api } from "@/lib/api";
 import type {
   BranchSummary,
@@ -173,23 +172,16 @@ export function BranchMenu({
         </div>
       )}
 
-      {/* Rule errors first: that gate needs a decision, the frame gate only
-          needs a click, and a merge has to clear both. */}
-      {refused && refused.conflicts.length === 0 && refused.new_findings.length > 0 && (
-        <MergeRuleBlock
-          preview={refused}
-          onRecord={(decisions) =>
-            void doMerge(refused.branch_id, false, decisions)
-          }
-          onClose={() => setRefused(null)}
-        />
-      )}
-
-      {refused && refused.conflicts.length === 0 && refused.new_findings.length === 0 && (
-        <MergeConflictView
+      {/* Both gates in one dialog, settled in one request: clearing one only
+          to be refused by the other is a worse experience than being told
+          everything at once. */}
+      {refused && refused.conflicts.length === 0 && (
+        <MergeBlockedView
           preview={refused}
           target={construct}
-          onForce={() => void doMerge(refused.branch_id, true)}
+          onSubmit={(allowFrameBreaks, decisions) =>
+            void doMerge(refused.branch_id, allowFrameBreaks, decisions)
+          }
           onClose={() => setRefused(null)}
         />
       )}

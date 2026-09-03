@@ -341,6 +341,7 @@ export default function ConstructPage({
           />
           <FindingsPanel
             findings={findings}
+            pack={construct.rule_pack}
             busy={pending}
             onSelect={goToFinding}
             onSuppress={suppressFinding}

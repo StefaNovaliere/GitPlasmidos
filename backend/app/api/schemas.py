@@ -53,6 +53,22 @@ class FrameIssueOut(BaseModel):
     blocking: bool
 
 
+class RulePackOut(BaseModel):
+    """Which rules judged this construct.
+
+    A gate whose rules can change on the server without anybody noticing stops
+    being trusted, so the pack identifies itself in every response that carries
+    a finding.
+    """
+
+    digest: str
+    version: str
+    rules: int
+    #: Files that would not load. A rule that vanishes silently is a check
+    #: nobody is running any more.
+    errors: list[str] = Field(default_factory=list)
+
+
 class ConstructDetail(BaseModel):
     id: str
     name: str
@@ -68,6 +84,7 @@ class ConstructDetail(BaseModel):
     #: Design-rule findings, suppressed ones included and marked as such:
     #: "3 findings, 1 suppressed" is auditable, a hidden finding is not.
     findings: list[Finding]
+    rule_pack: RulePackOut
     can_undo: bool
     can_redo: bool
     created_at: datetime
@@ -178,6 +195,8 @@ class MergePreview(BaseModel):
     #: the window in ``suppression.was`` / ``suppression.now``. The finding is
     #: the explanation; the UI needs nothing else to say why the merge bounced.
     new_findings: list[Finding] = Field(default_factory=list)
+    #: The pack the merge was judged against, so a refusal can name it.
+    rule_pack: RulePackOut | None = None
     #: What the merge would produce. Present whenever the coordinates merged,
     #: including when the result is refused for breaking a reading frame -
     #: showing the damage is the whole point of refusing.

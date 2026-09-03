@@ -17,7 +17,8 @@ from app.domain.rules.engine import (
     region_span,
 )
 from app.domain.rules.loader import DEFAULT_RULES_DIR, example_state, load_rules
-from app.domain.rules.models import Rule
+from app.domain.rules.models import pack_digest, rule_digest
+from app.domain.rules.models import Rule, RuleSet
 from tests.conftest import feat
 
 MINIMAL = {
@@ -330,7 +331,7 @@ def test_findings_come_back_errors_first():
         severity="error",
         evidence={**MINIMAL["evidence"], "confidence": "established"},
     )
-    assert [f.severity for f in lint([warn, err], state(seq, features))] == [
+    assert [f.severity for f in lint(RuleSet(rules=[warn, err]), state(seq, features))] == [
         "error",
         "warning",
     ]
@@ -381,3 +382,46 @@ def test_example_shorthand_builds_the_state_it_describes():
     assert (only.kind, only.start, only.end, only.strand, only.name) == (
         "CDS", 2, 8, -1, "gene",
     )
+
+
+# --------------------------------------------------------------------------
+# which pack judged this
+# --------------------------------------------------------------------------
+
+def test_the_pack_digest_does_not_depend_on_the_order_rules_loaded_in():
+    a = rule(id="alpha")
+    b = rule(id="beta")
+    assert pack_digest([a, b]) == pack_digest([b, a])
+    assert pack_digest([a]) != pack_digest([a, b])
+
+
+def test_the_pack_digest_moves_on_a_change_no_single_rule_digest_sees():
+    """Wider than the per-rule digest, deliberately.
+
+    Rewording a message does not change what a rule asserts, so it must not
+    invalidate anybody's suppression - but it does change what the linter says,
+    so the pack is not the same pack.
+    """
+    before, after = rule(), rule(message="{feature}: different words entirely")
+    assert rule_digest(before) == rule_digest(after)
+    assert pack_digest([before]) != pack_digest([after])
+
+
+def test_severity_is_part_of_the_pack_digest():
+    assert pack_digest([rule()]) != pack_digest([rule(severity="info")])
+
+
+def test_examples_are_the_rules_tests_not_the_rules():
+    with_more = rule(
+        examples=[
+            {"name": "x", "sequence": "ACGT", "triggers": False},
+            {"name": "y", "sequence": "TTTT", "triggers": False},
+        ]
+    )
+    assert pack_digest([rule()]) == pack_digest([with_more])
+
+
+def test_the_shipped_pack_reports_a_digest():
+    pack = load_rules()
+    assert len(pack.digest) == 64
+    assert pack.digest == load_rules().digest

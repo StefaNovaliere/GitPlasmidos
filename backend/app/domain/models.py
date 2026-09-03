@@ -136,6 +136,10 @@ class Suppression(BaseModel):
     #: Hash of what the rule asserted at suppression time. A rule that changed
     #: its window or its motif is asking a different question.
     rule_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    #: Hash of the whole pack at suppression time. Not used to invalidate
+    #: anything - that is the rule digest's job - but it is what lets the UI
+    #: separate "you changed the DNA" from "the rules moved underneath you".
+    pack_digest: str = ""
 
     @field_validator("reason")
     @classmethod

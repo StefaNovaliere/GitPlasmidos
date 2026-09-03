@@ -350,6 +350,19 @@ number nobody measured; what gets through instead is a *decision*, recorded as
 a `suppress_finding` in the merge commit with a reason attached. See
 [Suppression is an edit](#suppression-is-an-edit-not-metadata).
 
+### One refusal, every reason
+
+A merge has to clear both gates, and clearing one only to be refused by the
+other is worse than being told everything at once. So the 409 carries all of
+it — conflicts, frame damage, rule findings, and the pack that judged them —
+and the dialog settles both in one request: a checkbox for the frameshift, a
+written reason per blocking finding, one `POST` carrying
+`allow_frame_breaks` and the suppressions together.
+
+The two acknowledgements stay different on purpose. A frameshift mutant is
+real work somebody may be doing deliberately, so that gate takes a click. A
+design-rule error takes a sentence, because that sentence goes into the log.
+
 ### Showing the damage, not just naming it
 
 ![The merge refusal, read as codons](docs/merge-blocked.png)
@@ -540,6 +553,25 @@ finds nothing. The genuinely error-prone part is direction - a rule's region is
 expressed in the *target's reading direction*, so "upstream" of a minus-strand
 gene means higher coordinates. There are tests for exactly that, and a mutation
 that ignores strand direction fails two of them.
+
+### Which pack judged this
+
+A gate whose rules can change on the server without anybody noticing stops
+being trusted. So the pack identifies itself: `pack_digest()` hashes every
+loaded rule (minus its examples — those are the rules' tests, not the rules),
+and that digest travels on every response that carries a finding, shows in the
+panel header, and names itself in every refusal.
+
+It is deliberately wider than the per-rule digest. Rewording a message does not
+change what a rule *asserts*, so it must not invalidate anybody's suppression —
+but it does change what the linter says, so it is not the same pack. Each
+suppression records both, which is what separates *"you changed the DNA"* from
+*"somebody changed the rules underneath you"*: the rule digest invalidates,
+the pack digest explains.
+
+The panel also counts what would not load. A rule that vanishes because of a
+YAML typo is a check nobody is running any more, and silence about that is the
+same failure as a suppression that disappears quietly.
 
 ### Suppression is an edit, not metadata
 

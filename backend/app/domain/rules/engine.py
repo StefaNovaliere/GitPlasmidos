@@ -12,8 +12,6 @@ every rule against the wrong half of the molecule.
 
 from __future__ import annotations
 
-import hashlib
-import json
 import re
 
 from app.domain.circular import revcomp, segments, slice_span
@@ -23,8 +21,11 @@ from app.domain.rules.models import (
     Look,
     Region,
     Rule,
+    RuleSet,
     SuppressionState,
     Target,
+    rule_digest,
+    sha256_hex,
 )
 
 #: IUPAC code -> the bases it stands for.
@@ -80,39 +81,12 @@ def find_motif(
 EXCERPT_LIMIT = 48
 
 
-def _sha256(text: str) -> str:
-    return hashlib.sha256(text.encode("ascii")).hexdigest()
-
-
 def _excerpt(text: str) -> str:
     """A quotable piece of a window: the whole thing, or both ends of it."""
     if len(text) <= EXCERPT_LIMIT:
         return text
     half = (EXCERPT_LIMIT - 1) // 2
     return f"{text[:half]}…{text[-half:]}"
-
-
-def rule_digest(rule: Rule) -> str:
-    """Hash of what the rule *asserts*.
-
-    Only the normative fields: a rule whose window widens or whose motif
-    changes is asking a different question, and suppressions of its old answer
-    must not carry over silently. Title, message and notes are excluded on
-    purpose — rewording a rule is not rewriting it, and invalidating every
-    suppression over a typo fix is how people learn to ignore the linter.
-    """
-    return _sha256(
-        json.dumps(
-            {
-                "target": rule.target.model_dump(),
-                "region": rule.region.model_dump(),
-                "look": rule.look.model_dump(),
-                "expect": rule.expect.model_dump(),
-            },
-            sort_keys=True,
-            separators=(",", ":"),
-        )
-    )
 
 
 def window_text(
@@ -134,7 +108,7 @@ def evidence_window(
     """Hash the bases a rule looked at, and remember where they were."""
     text = window_text(span, feature, state)
     return EvidenceWindow(
-        digest=_sha256(text),
+        digest=sha256_hex(text),
         excerpt=_excerpt(text),
         start=span[0],
         end=span[1],
@@ -372,6 +346,7 @@ def apply_suppression(finding: Finding, suppression: Suppression | None) -> Find
         changed=changed,
         was=suppression.window.excerpt if changed else "",
         now=(finding.window.excerpt if finding.window else "") if changed else "",
+        pack_digest=suppression.pack_digest,
     )
     return marked
 
@@ -391,22 +366,30 @@ def suppression_payload(finding: Finding, reason: str) -> dict:
         "reason": reason,
         "window": finding.window.model_dump(),
         "rule_digest": finding.rule_digest,
+        "pack_digest": finding.pack_digest,
     }
 
 
-def lint(rules: list[Rule], state: ConstructState) -> list[Finding]:
+def lint(pack: RuleSet, state: ConstructState) -> list[Finding]:
     """Run a whole pack over a state, honouring its suppressions.
+
+    Takes the pack rather than a list of rules so that every finding can carry
+    the digest of what produced it. A finding is only meaningful against a
+    version of the rules, and that version has to travel with it.
 
     Suppressed findings are marked and kept, never dropped: a count of
     "3 findings, 1 suppressed" is auditable, and a hidden one rots.
     """
     order = {"error": 0, "warning": 1, "info": 2}
     silenced = {(s.rule_id, s.feature_id): s for s in state.suppressions}
-    findings = [
-        apply_suppression(f, silenced.get((f.rule_id, f.feature_id)))
-        for rule in rules
-        for f in evaluate(rule, state)
-    ]
+    digest = pack.digest
+    findings = []
+    for rule in pack.rules:
+        for finding in evaluate(rule, state):
+            finding.pack_digest = digest
+            findings.append(
+                apply_suppression(finding, silenced.get((finding.rule_id, finding.feature_id)))
+            )
     return sorted(
         findings,
         key=lambda f: (f.suppressed, order[f.severity], f.start or 0),

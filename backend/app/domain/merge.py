@@ -23,7 +23,6 @@ and still combine into a premature stop codon.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
 from dataclasses import dataclass, field
 
 from app.domain.analysis import check_reading_frames
@@ -36,7 +35,7 @@ from app.domain.models import (
 )
 from app.domain.replay import apply_operation, replay
 from app.domain.rules.engine import lint
-from app.domain.rules.models import Finding, Rule
+from app.domain.rules.models import Finding, RuleSet
 
 
 class MergeError(ValueError):
@@ -466,7 +465,7 @@ def _issue_keys(state: ConstructState) -> set[tuple[str, str]]:
 
 
 def _blocking_keys(
-    state: ConstructState, rules: Sequence[Rule]
+    state: ConstructState, pack: RuleSet
 ) -> set[tuple[str, str]]:
     """Design-rule errors already shouting on one tip, so not the merge's fault.
 
@@ -476,7 +475,7 @@ def _blocking_keys(
     """
     return {
         (f.rule_id, f.feature_id or "")
-        for f in lint(list(rules), state)
+        for f in lint(pack, state)
         if f.blocking
     }
 
@@ -490,7 +489,7 @@ def merge_logs(
     *,
     is_circular: bool = True,
     construct_id: str = "",
-    rules: Sequence[Rule] = (),
+    rules: RuleSet | None = None,
 ) -> MergeResult:
     """Rebase ``branch_ops`` onto the target and report what breaks.
 
@@ -517,10 +516,11 @@ def merge_logs(
             ) from exc
     target_state = state
 
+    pack = rules if rules is not None else RuleSet()
     ancestor_issues = _issue_keys(ancestor)
     target_issues = _issue_keys(target_state)
-    known_findings = _blocking_keys(ancestor, rules) | _blocking_keys(
-        target_state, rules
+    known_findings = _blocking_keys(ancestor, pack) | _blocking_keys(
+        target_state, pack
     )
     branch_state = replay(
         base_sequence,
@@ -529,7 +529,7 @@ def merge_logs(
         is_circular=is_circular,
     )
     branch_issues = _issue_keys(branch_state)
-    known_findings |= _blocking_keys(branch_state, rules)
+    known_findings |= _blocking_keys(branch_state, pack)
 
     # Rebase each branch operation, apply it, then carry the transform chain
     # across it so the next operation is rebased from the frame it was
@@ -597,7 +597,7 @@ def merge_logs(
     ]
     result.new_findings = [
         finding
-        for finding in lint(list(rules), merged)
+        for finding in lint(pack, merged)
         if finding.blocking
         and (finding.rule_id, finding.feature_id or "") not in known_findings
     ]

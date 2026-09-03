@@ -80,6 +80,17 @@ export interface SuppressionState {
   changed: "evidence" | "rule" | null;
   was: string;
   now: string;
+  /** The pack this decision was taken against. */
+  pack_digest: string;
+}
+
+/** Which rules judged a construct, so a moving gate cannot move in silence. */
+export interface RulePack {
+  digest: string;
+  version: string;
+  rules: number;
+  /** Rule files that would not load. A vanished rule is a check nobody runs. */
+  errors: string[];
 }
 
 /** One thing a design rule reported. Suppressed ones are marked, not dropped. */
@@ -95,6 +106,7 @@ export interface Finding {
   evidence: RuleEvidence;
   window: EvidenceWindow | null;
   rule_digest: string;
+  pack_digest: string;
   suppressed: boolean;
   suppression: SuppressionState | null;
 }
@@ -112,6 +124,7 @@ export interface ConstructDetail {
   warnings: string[];
   frame_issues: FrameIssue[];
   findings: Finding[];
+  rule_pack: RulePack;
   can_undo: boolean;
   can_redo: boolean;
   created_at: string;
@@ -212,6 +225,7 @@ export interface MergePreview {
    * explanation of why the merge bounced.
    */
   new_findings: Finding[];
+  rule_pack: RulePack | null;
   /** What the merge would produce, present whenever the coordinates merged. */
   merged_sequence: string | null;
   merged_length: number | null;

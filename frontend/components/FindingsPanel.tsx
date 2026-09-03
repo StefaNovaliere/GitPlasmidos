@@ -2,10 +2,11 @@
 
 import { useState } from "react";
 
-import type { Finding } from "@/lib/types";
+import type { Finding, RulePack } from "@/lib/types";
 
 interface Props {
   findings: Finding[];
+  pack: RulePack;
   busy: boolean;
   onSelect: (finding: Finding) => void;
   onSuppress: (finding: Finding, reason: string) => void;
@@ -45,6 +46,7 @@ function provenance(finding: Finding): string {
  */
 export function FindingsPanel({
   findings,
+  pack,
   busy,
   onSelect,
   onSuppress,
@@ -71,14 +73,35 @@ export function FindingsPanel({
 
   return (
     <section className="flex max-h-[40%] min-h-0 flex-col border-t border-slate-200">
-      <header className="flex items-baseline justify-between px-3 py-2">
-        <h2 className="text-xs font-semibold uppercase tracking-wide text-slate-500">
-          Design rules
-        </h2>
-        <span className="font-mono text-[11px] text-slate-400">
-          {live} finding{live === 1 ? "" : "s"}
-          {suppressed > 0 && `, ${suppressed} suppressed`}
-        </span>
+      <header className="px-3 py-2">
+        <div className="flex items-baseline justify-between gap-2">
+          <h2 className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+            Design rules
+          </h2>
+          <span className="font-mono text-[11px] text-slate-400">
+            {live} finding{live === 1 ? "" : "s"}
+            {suppressed > 0 && `, ${suppressed} suppressed`}
+          </span>
+        </div>
+        {/* Which rules judged this. A gate that can change on the server
+            without saying so stops being trusted. */}
+        <p
+          title={
+            `Rule pack ${pack.version} · ${pack.digest}\n` +
+            `${pack.rules} rule${pack.rules === 1 ? "" : "s"} loaded` +
+            (pack.errors.length
+              ? `\n\nRejected:\n${pack.errors.join("\n")}`
+              : "")
+          }
+          className={`mt-0.5 font-mono text-[10px] ${
+            pack.errors.length ? "text-amber-700" : "text-slate-400"
+          }`}
+        >
+          pack {pack.digest.slice(0, 6)} · {pack.rules} rule
+          {pack.rules === 1 ? "" : "s"}
+          {pack.errors.length > 0 &&
+            `, ${pack.errors.length} rejected`}
+        </p>
       </header>
 
       <ul className="min-h-0 flex-1 overflow-y-auto px-1 pb-2">
@@ -151,7 +174,17 @@ export function FindingsPanel({
               {stale && finding.suppression && (
                 <div className="mt-1 rounded border border-amber-200 bg-amber-50 px-2 py-1 text-[11px] text-amber-900">
                   {finding.suppression.changed === "rule" ? (
-                    <p>The rule changed since this was suppressed.</p>
+                    <p>
+                      The rule changed since this was suppressed — pack{" "}
+                      <span className="font-mono">
+                        {finding.suppression.pack_digest.slice(0, 6) || "unknown"}
+                      </span>{" "}
+                      →{" "}
+                      <span className="font-mono">
+                        {finding.pack_digest.slice(0, 6)}
+                      </span>
+                      .
+                    </p>
                   ) : (
                     <p>
                       Suppressed when this region read{" "}

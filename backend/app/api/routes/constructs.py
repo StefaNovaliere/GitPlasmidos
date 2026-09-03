@@ -34,6 +34,7 @@ from app.api.schemas import (
     OperationsDiffOut,
     OrfOut,
     OrfsOut,
+    RulePackOut,
     SequenceDiffOut,
     SequenceSegmentOut,
 )
@@ -136,6 +137,15 @@ def _undo_redo_flags(construct: Construct) -> tuple[bool, bool]:
     )
 
 
+def _rule_pack() -> RulePackOut:
+    return RulePackOut(
+        digest=RULES.digest,
+        version=RULES.version,
+        rules=len(RULES.rules),
+        errors=RULES.errors,
+    )
+
+
 def _frame_issue(issue) -> FrameIssueOut:
     return FrameIssueOut(
         feature_id=issue.feature_id,
@@ -167,7 +177,8 @@ def _detail(construct: Construct, state: ConstructState | None = None) -> dict:
         "gc_content": state.gc_content,
         "warnings": state.warnings,
         "frame_issues": [_frame_issue(i) for i in check_reading_frames(state)],
-        "findings": lint(RULES.rules, state),
+        "findings": lint(RULES, state),
+        "rule_pack": _rule_pack(),
         "can_undo": can_undo,
         "can_redo": can_redo,
         "created_at": construct.created_at,
@@ -583,6 +594,7 @@ def _preview(branch_id: str, result) -> dict:
         conflicts=[to_out(c) for c in result.conflicts],
         new_frame_issues=[_frame_issue(i) for i in result.new_frame_issues],
         new_findings=result.new_findings,
+        rule_pack=_rule_pack(),
         merged_sequence=(
             result.merged_state.sequence if result.merged_state else None
         ),
@@ -647,7 +659,7 @@ def _prepare_merge(target: Construct, branch: Construct):
         _domain_ops(branch_live[_merged_boundary(branch):]),
         is_circular=target.is_circular,
         construct_id=target.id,
-        rules=RULES.rules,
+        rules=RULES,
     )
 
 
@@ -718,7 +730,7 @@ def _still_blocking(result, extra: list[Operation]) -> list:
             raise HTTPException(HTTP_422_UNPROCESSABLE, str(exc)) from exc
     return [
         f
-        for f in lint(RULES.rules, merged)
+        for f in lint(RULES, merged)
         if f.blocking and (f.rule_id, f.feature_id) in introduced
     ]
 

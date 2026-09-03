@@ -832,6 +832,16 @@ def rbs_finding(detail: dict) -> dict:
     return next(f for f in detail["findings"] if f["rule_id"] == "rbs-atg-spacing")
 
 
+def test_a_construct_names_the_pack_that_judged_it(client):
+    detail = lintable_construct(client)
+    pack = detail["rule_pack"]
+    assert len(pack["digest"]) == 64
+    assert pack["rules"] == 3 and pack["errors"] == []
+    # And every finding carries it, so a decision can record which rules it
+    # was taken against.
+    assert {f["pack_digest"] for f in detail["findings"]} == {pack["digest"]}
+
+
 def test_a_construct_carries_its_design_rule_findings(client):
     finding = rbs_finding(lintable_construct(client))
     assert finding["severity"] == "error"
@@ -974,6 +984,11 @@ def test_a_merge_that_revives_a_documented_decision_is_refused(client):
 
     # The finding carries its own explanation, down to both readings of the
     # window, so the UI can say why this bounced without asking anything else.
+    # The refusal names the rules it was judged against: a gate that can move
+    # on the server without saying so stops being trusted.
+    parent = client.get(f"/api/constructs/{cid}").json()
+    assert detail["rule_pack"]["digest"] == parent["rule_pack"]["digest"]
+
     (blocked,) = detail["new_findings"]
     assert blocked["rule_id"] == "rbs-atg-spacing"
     assert blocked["feature_name"] == "lacZalpha"
@@ -1041,3 +1056,66 @@ def test_suppressing_something_that_is_not_blocking_the_merge_is_refused(client)
     )
     assert response.status_code == 422
     assert "not blocking" in response.json()["detail"]
+
+
+#: Well spaced, translating cleanly. Each branch will break one thing.
+BOTH_SEQ = "TTTT" + "AGGAGG" + "T" * 8 + "ATG" + "CCC" * 4 + "TAA" + "T" * 24
+
+
+def both_gates(client) -> tuple[str, str]:
+    parent = client.post(
+        "/api/constructs",
+        json={"name": "pBoth", "sequence": BOTH_SEQ, "is_circular": True},
+    ).json()
+    cid = parent["id"]
+    assert apply(
+        client,
+        cid,
+        "add_feature",
+        feature={
+            "id": "cds",
+            "name": "gfp",
+            "kind": "CDS",
+            "start": 18,
+            "end": 36,
+            "strand": 1,
+        },
+    ).status_code == 201
+    child = branch_of(client, cid, "one more codon")
+    for target_id, gap, codon in (
+        (cid, 14, "AAT"),
+        (child["id"], 12, "AAA"),
+    ):
+        assert apply(client, target_id, "insert", pos=gap, seq="TTT").status_code == 201
+        assert apply(client, target_id, "insert", pos=25, seq=codon).status_code == 201
+    return cid, child["id"]
+
+
+def test_a_merge_that_fails_both_gates_reports_both_in_one_refusal(client):
+    """So the UI can put both in one dialog, and settle them in one round."""
+    cid, bid = both_gates(client)
+    detail = merge(client, cid, bid).json()["detail"]
+    assert detail["conflicts"] == []
+    assert [i["problem"] for i in detail["new_frame_issues"]] == ["premature_stop"]
+    assert [f["rule_id"] for f in detail["new_findings"]] == ["rbs-atg-spacing"]
+
+
+def test_both_gates_clear_in_a_single_request(client):
+    cid, bid = both_gates(client)
+    merged = merge(
+        client,
+        cid,
+        bid,
+        allow_frame_breaks=True,
+        suppress=[
+            {
+                "rule_id": "rbs-atg-spacing",
+                "feature_id": "cds",
+                "reason": "truncation and weak initiation are both intended here",
+            }
+        ],
+    )
+    assert merged.status_code == 200, merged.text
+    body = merged.json()
+    assert [i["problem"] for i in body["frame_issues"]] == ["premature_stop"]
+    assert rbs_finding(body)["suppressed"] is True

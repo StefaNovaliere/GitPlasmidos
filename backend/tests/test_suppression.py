@@ -21,7 +21,7 @@ from app.domain.merge import merge_logs
 from app.domain.models import ConstructState, Feature, OperationError
 from app.domain.replay import replay
 from app.domain.rules.engine import lint, suppression_payload
-from app.domain.rules.models import Finding, Rule
+from app.domain.rules.models import Finding, Rule, RuleSet
 from tests.conftest import op, ops
 
 #: 60 bp: filler, then a bare window, then a CDS, then filler.
@@ -65,7 +65,7 @@ def state_of(*specs) -> ConstructState:
 
 
 def only(state: ConstructState, rule: Rule = RULE) -> Finding:
-    found = lint([rule], state)
+    found = lint(RuleSet(rules=[rule]), state)
     assert len(found) == 1, found
     return found[0]
 
@@ -78,6 +78,22 @@ def payload(reason: str = REASON) -> dict:
 # ---------------------------------------------------------------------------
 # the operation
 # ---------------------------------------------------------------------------
+
+def test_a_suppression_records_the_pack_it_was_decided_against():
+    """Traceability for the other way a finding can change underneath you.
+
+    The rule digest answers "is this still the same question?". The pack digest
+    answers "are these still the same rules?" - which is what somebody needs
+    when a merge bounces on a gate that moved while they were not looking.
+    """
+    body = payload()
+    assert body["pack_digest"] == RuleSet(rules=[RULE]).digest
+
+    state = state_of(("suppress_finding", body))
+    finding = only(state)
+    assert finding.pack_digest == RuleSet(rules=[RULE]).digest
+    assert finding.suppression.pack_digest == finding.pack_digest
+
 
 def test_a_finding_is_reported_before_anybody_silences_it():
     finding = only(state_of())
@@ -155,7 +171,7 @@ def test_removing_the_feature_takes_its_suppression_with_it():
         ("remove_feature", {"feature_id": "cds"}),
     )
     assert state.suppressions == []
-    assert lint([RULE], state) == []
+    assert lint(RuleSet(rules=[RULE]), state) == []
 
 
 # ---------------------------------------------------------------------------
@@ -281,7 +297,7 @@ def do_merge(*, ancestor=(), target=(), branch=(), seq=SEQ,
         [op(k, index=n + i, **p) for i, (k, p) in enumerate(branch)],
         is_circular=True,
         construct_id="c",
-        rules=list(rules),
+        rules=RuleSet(rules=list(rules)),
     )
 
 
@@ -488,3 +504,41 @@ def test_a_suppression_the_merge_invalidates_blocks_it():
     assert blocked.suppression.changed == "evidence"
     assert blocked.suppression.was == "CCCCCCCCCCCC"
     assert blocked.suppression.now == "CCCCGGGCCCCC"
+
+
+# ---------------------------------------------------------------------------
+# both gates at once
+# ---------------------------------------------------------------------------
+
+#: Well spaced and translating cleanly, to start with.
+BOTH_CDS = "ATG" + "CCC" * 4 + "TAA"
+BOTH_SEQ = "TTTT" + "AGGAGG" + "T" * 8 + BOTH_CDS + "T" * 24
+BOTH_FEATURE = Feature(id="cds", name="gfp", kind="CDS", start=18, end=36)
+
+
+def test_a_merge_can_fail_both_gates_and_answers_with_both():
+    """One refusal, both reasons.
+
+    Each side widens the ribosome binding site spacing by three bases and adds
+    one codon to the protein; each is harmless alone. Together they push the
+    spacing outside the window *and* splice a stop codon into the gene. The
+    result carries both, so the caller can settle both in one round rather
+    than clearing one gate and walking into the next.
+    """
+    result = do_merge(
+        seq=BOTH_SEQ,
+        features=[BOTH_FEATURE],
+        rules=[SPACING],
+        target=[
+            ("insert", {"pos": 14, "seq": "TTT"}),
+            ("insert", {"pos": 25, "seq": "AAT"}),
+        ],
+        branch=[
+            ("insert", {"pos": 12, "seq": "TTT"}),
+            ("insert", {"pos": 25, "seq": "AAA"}),
+        ],
+    )
+    assert not result.conflicts
+    assert result.breaks_biology and result.breaks_rules
+    assert [i.problem for i in result.new_frame_issues] == ["premature_stop"]
+    assert [f.rule_id for f in result.new_findings] == ["rbs-spacing"]
