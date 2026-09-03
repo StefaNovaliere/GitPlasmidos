@@ -22,8 +22,9 @@ from sqlalchemy.orm import Session
 
 from app.db.models import Construct, OperationRow
 from app.db.session import SessionLocal, engine, init_db
-from app.domain.models import Feature, Operation
+from app.domain.models import ConstructState, Feature, Operation
 from app.domain.replay import replay
+from app.domain.rules import RuleSet, lint, load_rules, suppression_payload
 from app.domain.seqio import parse_sequence_file
 
 DATA = Path(__file__).resolve().parents[1] / "data"
@@ -36,6 +37,24 @@ PUC19 = DATA / "puc19_annotated.gb"
 AMPR_SITE = 2001
 AMPR_EDIT_A = "AAT"  # adds a phenylalanine
 AMPR_EDIT_B = "CAG"  # adds a cysteine
+
+#: Wild-type pUC19 trips ``rbs-atg-spacing`` on both of its genes: neither
+#: lacZ-alpha nor bla carries the strong AGGAGG consensus, and both are
+#: transcribed anyway. The rule is not wrong about what it measures - AGGAGG is
+#: the strong form and it is genuinely absent - so it stays an ``error``. What
+#: is a judgement is that *this* molecule is fine regardless, and a judgement
+#: belongs in the log where somebody can read it, undo it, or disagree with it.
+#:
+#: So the demo opens on "2 findings, 2 suppressed" rather than on two red
+#: errors that make the linter look broken. The infrastructure exists exactly
+#: because rules are imperfect; hiding that would be the wrong lesson.
+WILD_TYPE_REASON = (
+    "El consenso AGGAGG estricto es demasiado rígido para el wild-type "
+    "pUC19. Mantener suprimido."
+)
+#: Only this rule is pre-suppressed. A different rule firing on the wild type
+#: is news, and news deserves somebody's decision rather than a canned one.
+WILD_TYPE_RULE = "rbs-atg-spacing"
 
 #: A ribosome binding site tuned to sit 8 nt from the lacZ-alpha start codon,
 #: comfortably inside the 5-13 nt window the rule pack cites. lacZ-alpha is on
@@ -75,9 +94,14 @@ SCENARIOS = [
             "panel are all derived from the operation log, which is empty."
         ),
         demo=(
-            "Nothing to click. The circular map, the 18 features and the "
-            "single cutters in the enzyme panel are all derived from an "
-            "operation log that is empty."
+            "Nothing to click yet. The circular map, the 18 features and the "
+            "single cutters in the enzyme panel are all derived from the "
+            "operation log — which holds exactly two entries, and neither is "
+            "an edit. Both genes are missing the strong AGGAGG consensus, the "
+            "rule is right about that, and somebody decided this molecule is "
+            "fine anyway. The panel reads \"2 findings, 2 suppressed\" and the "
+            "reason is in the history, where it can be read, undone or "
+            "disagreed with."
         ),
         branches=[
             Scenario(
@@ -181,6 +205,25 @@ SCENARIOS = [
 ]
 
 
+def wild_type_decisions(
+    sequence: str, features: list[Feature], pack: RuleSet
+) -> list[tuple[str, dict]]:
+    """The two decisions every seeded construct starts from.
+
+    Computed, never written by hand: a suppression carries the digest of the
+    window its rule read, so it can only be built by asking the engine what it
+    just looked at. That also means the seed cannot drift from the pack — if
+    the rule changes, these are recorded against the rule as it actually is,
+    and if it stops firing they simply are not created.
+    """
+    state = ConstructState(sequence=sequence, features=features, is_circular=True)
+    return [
+        ("suppress_finding", suppression_payload(finding, WILD_TYPE_REASON))
+        for finding in lint(pack, state)
+        if finding.blocking and finding.rule_id == WILD_TYPE_RULE
+    ]
+
+
 def _new_id() -> str:
     return str(uuid.uuid4())
 
@@ -256,6 +299,9 @@ def seed(db: Session, *, reset: bool = False) -> list[Construct]:
         db.flush()
 
     record = parse_sequence_file(PUC19.read_text(), PUC19.name)
+    # Shared prehistory: every scenario is wild-type pUC19 plus its own edits,
+    # so the two standing decisions about the wild type belong to all of them.
+    prelude = wild_type_decisions(record.sequence, record.features, load_rules())
     existing = {c.name: c for c in db.scalars(select(Construct)).all()}
     created: list[Construct] = []
 
@@ -270,13 +316,15 @@ def seed(db: Session, *, reset: bool = False) -> list[Construct]:
                 description=scenario.description,
                 sequence=record.sequence,
                 features=record.features,
-                operations=scenario.operations,
+                operations=prelude + scenario.operations,
             )
             created.append(parent)
         for child in scenario.branches:
             if child.name in existing:
                 continue
-            fork = (
+            # ``fork_at`` counts the scenario's own operations; the prelude is
+            # ancestry, and every branch inherits all of it.
+            fork = len(prelude) + (
                 len(scenario.operations) if child.fork_at is None else child.fork_at
             )
             created.append(
@@ -287,7 +335,8 @@ def seed(db: Session, *, reset: bool = False) -> list[Construct]:
                     sequence=record.sequence,
                     features=record.features,
                     # A branch carries the shared history, then its own edits.
-                    operations=scenario.operations[:fork] + child.operations,
+                    operations=(prelude + scenario.operations)[:fork]
+                    + child.operations,
                     parent=parent,
                     fork_index=fork,
                 )
@@ -356,10 +405,12 @@ def main() -> None:
                 is_circular=True,
             )
             mark = "  └─ " if construct.parent_id else ""
-            edits = len(construct.operations)
+            # "operations", not "edits": a suppression is one of these and it
+            # edits nothing.
+            count = len(construct.operations)
             print(
                 f"{mark}{construct.name}  {state.length:,} bp, "
-                f"{edits} edit{'' if edits == 1 else 's'}  {construct.id}"
+                f"{count} operation{'' if count == 1 else 's'}  {construct.id}"
             )
         if created:
             print(f"\nSeeded {len(created)} constructs into {engine.url}.")

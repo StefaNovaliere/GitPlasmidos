@@ -109,13 +109,57 @@ def test_every_seeded_operation_actually_applies(db):
         ), construct.name
 
 
-def test_the_plain_puc19_is_untouched(db):
+def test_the_plain_puc19_is_the_vector_plus_two_decisions(db):
+    """The log is not empty, and neither entry is an edit.
+
+    Both of pUC19's genes are missing the strong AGGAGG consensus, which the
+    rule is right about and which does not stop either of them being
+    transcribed. The judgement that this molecule is fine anyway is recorded
+    rather than hardcoded away, so the demo opens on "2 suppressed" instead of
+    on two red errors that make the linter look broken.
+    """
     seed(db)
     puc19 = by_name(db)["pUC19"]
     state = state_of(puc19)
     assert state.length == 2686
     assert len(state.features) == 18
-    assert puc19.operations == []
+    assert [r.kind for r in puc19.operations] == [
+        "suppress_finding",
+        "suppress_finding",
+    ]
+
+    findings = lint(load_rules(), state)
+    quiet = [f for f in findings if f.suppressed]
+    assert {f.feature_name for f in quiet} == {"lacZalpha", "bla"}
+    assert all(f.suppression.reason.startswith("El consenso AGGAGG") for f in quiet)
+    assert all(not f.suppression.stale for f in quiet)
+    # Nothing is blocking, and nothing was hidden: the terminator warnings are
+    # still on screen, because only one rule is pre-suppressed.
+    assert [f.rule_id for f in findings if not f.suppressed] == [
+        "cds-without-terminator",
+        "cds-without-terminator",
+    ]
+
+
+def test_the_wild_type_decisions_cannot_drift_from_the_pack(db):
+    """Computed from the engine, never written by hand.
+
+    A suppression carries the digest of the window its rule read, so it can
+    only be built by asking the engine what it just looked at. A seed that
+    hardcoded one would go stale the moment anybody touched the rule.
+    """
+    seed(db)
+    pack = load_rules()
+    for row in by_name(db)["pUC19"].operations:
+        assert row.payload["pack_digest"] == pack.digest
+        assert row.payload["rule_id"] == "rbs-atg-spacing"
+
+
+def test_every_scenario_inherits_the_wild_type_decisions(db):
+    seed(db)
+    for construct in by_name(db).values():
+        first_two = [r.kind for r in construct.operations][:2]
+        assert first_two == ["suppress_finding", "suppress_finding"], construct.name
 
 
 def test_the_mcs_branch_is_a_branch_that_diverged(db):
@@ -123,7 +167,7 @@ def test_the_mcs_branch_is_a_branch_that_diverged(db):
     everything = by_name(db)
     branch = everything["pUC19 · MCS swap"]
     assert branch.parent_id == everything["pUC19"].id
-    assert branch.fork_index == 0
+    assert branch.fork_index == 2  # the two wild-type decisions, and nothing else
     assert state_of(branch).length == 2686 - 50 + 18
     assert any(f.name == "new MCS" for f in state_of(branch).features)
 
@@ -201,6 +245,11 @@ def test_merging_the_two_rbs_branches_trips_the_design_rule(db):
     (finding,) = result.new_findings
     assert (finding.rule_id, finding.feature_name) == ("rbs-atg-spacing", "lacZalpha")
     assert "14 nt" in finding.message
+    # The standing decision about the wild type does not cover this: the labs
+    # replaced the very bases it was made about, so it comes back marked.
+    assert finding.suppression.stale
+    assert finding.suppression.changed == "evidence"
+    assert finding.suppression.was != finding.suppression.now
     # bla has been missing a strong Shine-Dalgarno all along, on both tips.
     # The merge is not to blame for it and does not get charged with it.
     assert all(f.feature_name != "bla" for f in result.new_findings)

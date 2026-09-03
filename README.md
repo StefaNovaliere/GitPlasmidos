@@ -167,10 +167,10 @@ memory is a demo that goes wrong in front of the person you wanted to impress.
 Demo, in order:
 
   1. pUC19
-     http://localhost:3000/constructs/491fbaf2-…
-     Nothing to click. The circular map, the 18 features and the single
-     cutters in the enzyme panel are all derived from an operation log that
-     is empty.
+     http://localhost:3000/constructs/9672eea0-…
+     Nothing to click yet. The circular map, the 18 features and the single
+     cutters in the enzyme panel are all derived from the operation log —
+     which holds exactly two entries, and neither is an edit. […]
 
   2. pUC19 · AmpR +Phe
      http://localhost:3000/constructs/e53d95a5-…
@@ -179,12 +179,31 @@ Demo, in order:
      289. The dialog shows all three reading frames as codons.
 
   3. pUC19 · RBS spacer (lab A)
-     http://localhost:3000/constructs/866f4dc0-…
+     http://localhost:3000/constructs/1c0ad519-…
      Branches → Merge "pUC19 · RBS spacer (lab B)". Refused by a design rule
-     this time: 8 + 3 + 3 puts the Shine-Dalgarno 14 nt from the ATG, outside
-     the window Shine and Dalgarno measured. Write a reason and merge anyway
-     — it lands in the history as an operation, not as a flag.
+     this time: 8 + 3 + 3 puts the Shine-Dalgarno 14 nt from the ATG […]
 ```
+
+### The first screen is two suppressed findings, on purpose
+
+Wild-type pUC19 trips `rbs-atg-spacing` on both of its genes: neither carries
+the strong AGGAGG consensus, and both are transcribed anyway. The rule is not
+wrong about what it measures, so it stays an `error` — softening a rule to make
+a demo look good is how a linter stops meaning anything.
+
+What is a judgement is that *this* molecule is fine regardless, so the seed
+records that judgement the way the application would: two `suppress_finding`
+operations on the wild type, with a reason attached. The demo opens on
+*"2 findings, 2 suppressed"* instead of on two red errors that make the linter
+look broken, and the very first thing on screen is the mechanism this project
+is about — an imperfect rule, a documented human decision, and both of them
+still visible.
+
+They are computed, never hardcoded: a suppression carries the digest of the
+window its rule read, so it can only be built by asking the engine what it
+just looked at. Step 3 then shows the other half of that — the two labs
+replace the bases the wild-type decision was made about, so it stops covering
+them and the merge dialog says so, quoting both readings.
 
 Without `--reset` it is idempotent: running it again restores whatever is
 missing and leaves the rest alone. Constructs can be deleted from the listing,
