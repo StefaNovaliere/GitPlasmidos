@@ -269,17 +269,19 @@ def test_rewording_a_rule_does_not_invalidate_anything():
 # merging: a suppression is carried, and never conflicts
 # ---------------------------------------------------------------------------
 
-def do_merge(*, ancestor=(), target=(), branch=()):
+def do_merge(*, ancestor=(), target=(), branch=(), seq=SEQ,
+             features=(CDS_FEATURE,), rules=(RULE,)):
     a = [op(k, index=i, **p) for i, (k, p) in enumerate(ancestor)]
     n = len(a)
     return merge_logs(
-        SEQ,
-        [CDS_FEATURE],
+        seq,
+        list(features),
         a,
         [op(k, index=n + i, **p) for i, (k, p) in enumerate(target)],
         [op(k, index=n + i, **p) for i, (k, p) in enumerate(branch)],
         is_circular=True,
         construct_id="c",
+        rules=list(rules),
     )
 
 
@@ -362,3 +364,127 @@ def test_a_branch_can_lift_a_suppression_the_ancestor_made():
     assert not result.conflicts
     assert result.merged_state.suppressions == []
     assert only(result.merged_state).suppressed is False
+
+
+# ---------------------------------------------------------------------------
+# the gate: an error the merge introduces is a wall, and a suppression is the
+# only door through it
+# ---------------------------------------------------------------------------
+
+#: A spacing rule, so a merge can break a rule without either side breaking it.
+SPACING = Rule.model_validate(
+    {
+        **RULE.model_dump(),
+        "id": "rbs-spacing",
+        "region": {"where": "upstream", "window": 30},
+        "expect": {"presence": "required", "distance_min": 5, "distance_max": 13},
+        "message": "{feature}: Shine-Dalgarno is {distance} nt from the start codon",
+        "message_missing": "{feature}: no Shine-Dalgarno in the {window} bases upstream",
+    }
+)
+
+#: AGGAGG at 4..10, then a gap of 8, then the CDS. Well spaced, to start with.
+SPACED_SEQ = "TTTT" + "AGGAGG" + "T" * 8 + CDS + "T" * 27
+SPACED_FEATURE = Feature(id="cds", name="lacZalpha", kind="CDS", start=18, end=33)
+SPACED = {"seq": SPACED_SEQ, "features": [SPACED_FEATURE], "rules": [SPACING]}
+
+
+def test_neither_edit_breaks_the_spacing_rule_on_its_own():
+    for side in ("target", "branch"):
+        result = do_merge(**SPACED, **{side: [("insert", {"pos": 14, "seq": "TTT"})]})
+        assert result.new_findings == []
+        assert result.clean
+
+
+def test_two_clean_edits_that_combine_into_a_rule_error_block_the_merge():
+    """The rule engine's version of the premature stop codon.
+
+    Each branch pushes the ribosome binding site three bases further from the
+    start codon, and 8 -> 11 is still inside the window either way. Together
+    they make it 14, which is outside it. Nobody broke anything; the merge did.
+    """
+    result = do_merge(
+        **SPACED,
+        target=[("insert", {"pos": 14, "seq": "TTT"})],
+        branch=[("insert", {"pos": 12, "seq": "TTT"})],
+    )
+    assert not result.conflicts  # the coordinates merge perfectly well
+    assert result.breaks_rules and not result.clean
+    (blocked,) = result.new_findings
+    assert blocked.rule_id == "rbs-spacing"
+    assert "14 nt" in blocked.message
+
+
+def test_an_error_both_tips_already_had_is_not_the_merges_fault():
+    """The gate blames the merge, never the state it was already in.
+
+    Blocking on any error at all would wall off every construct that already
+    has one, which punishes merging rather than breaking.
+    """
+    result = do_merge(
+        target=[("insert", {"pos": 5, "seq": "TTTTTT"})],
+        branch=[("insert", {"pos": 55, "seq": "GG"})],
+    )
+    assert only(result.merged_state).blocking  # still an error, and still shown
+    assert result.new_findings == []
+    assert result.clean
+
+
+ANNOTATE = (
+    "add_feature",
+    {
+        "feature": {
+            "id": "cds",
+            "name": "lacZalpha",
+            "kind": "CDS",
+            "start": 32,
+            "end": 47,
+            "strand": 1,
+        }
+    },
+)
+
+
+def branch_side_payload() -> dict:
+    """What the branch suppressed, computed against the branch's own state."""
+    annotated = replay(SEQ, [], ops(ANNOTATE), is_circular=True)
+    return suppression_payload(only(annotated), REASON)
+
+
+def test_a_suppression_the_merge_leaves_standing_does_not_block_it():
+    result = do_merge(
+        features=[],
+        target=[("insert", {"pos": 5, "seq": "TTTTTT"})],
+        branch=[ANNOTATE, ("suppress_finding", branch_side_payload())],
+    )
+    assert result.new_findings == []
+    assert result.clean
+    assert only(result.merged_state).suppressed is True
+
+
+def test_a_suppression_the_merge_invalidates_blocks_it():
+    """The case the gate exists for.
+
+    One branch annotated a CDS with a deliberately weak ribosome binding site
+    and wrote down why. The other rewrote the bases that decision was made
+    about. Neither side is broken; the merge is, because nobody has looked at
+    the new sequence and said it is still deliberate.
+    """
+    result = do_merge(
+        features=[],
+        target=[("replace", {"start": 24, "end": 27, "seq": "GGG"})],
+        branch=[ANNOTATE, ("suppress_finding", branch_side_payload())],
+    )
+    assert not result.conflicts
+    assert result.breaks_rules and not result.clean
+
+    # The finding *is* the explanation: which rule, whose decision, and both
+    # readings of the window. The UI needs nothing else to say why it bounced.
+    (blocked,) = result.new_findings
+    assert blocked.rule_id == "rbs-demo"
+    assert blocked.feature_name == "lacZalpha"
+    assert blocked.suppression.reason == REASON
+    assert blocked.suppression.stale is True
+    assert blocked.suppression.changed == "evidence"
+    assert blocked.suppression.was == "CCCCCCCCCCCC"
+    assert blocked.suppression.now == "CCCCGGGCCCCC"

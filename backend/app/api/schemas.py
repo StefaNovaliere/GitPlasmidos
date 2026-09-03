@@ -173,6 +173,11 @@ class MergePreview(BaseModel):
     conflicts: list[ConflictOut] = Field(default_factory=list)
     #: Reading-frame damage the merge itself introduces.
     new_frame_issues: list[FrameIssueOut] = Field(default_factory=list)
+    #: Design-rule errors the merge itself introduces — including a finding
+    #: whose suppression the merge invalidated, which carries both readings of
+    #: the window in ``suppression.was`` / ``suppression.now``. The finding is
+    #: the explanation; the UI needs nothing else to say why the merge bounced.
+    new_findings: list[Finding] = Field(default_factory=list)
     #: What the merge would produce. Present whenever the coordinates merged,
     #: including when the result is refused for breaking a reading frame -
     #: showing the damage is the whole point of refusing.
@@ -183,6 +188,16 @@ class MergePreview(BaseModel):
     merged_features: list[Feature] = Field(default_factory=list)
 
 
+class MergeSuppression(BaseModel):
+    """"Merge anyway, and here is why" for one blocking finding."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    rule_id: str
+    feature_id: str
+    reason: str
+
+
 class MergeRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -191,6 +206,11 @@ class MergeRequest(BaseModel):
     #: silently shipping a dead protein is the failure this project exists to
     #: prevent, but deliberately building a frameshift mutant is real work.
     allow_frame_breaks: bool = False
+    #: There is no equivalent flag for design-rule errors. The only way past
+    #: that gate is a suppression, which is an operation: it lands in the
+    #: merge commit with a reason attached, rather than a boolean nobody can
+    #: read back six months later.
+    suppress: list[MergeSuppression] = Field(default_factory=list)
 
 
 class DiffSide(BaseModel):

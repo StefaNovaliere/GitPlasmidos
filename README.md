@@ -309,7 +309,7 @@ Rebasing `delete [1000, 1100)` through a preceding `insert(pos=0, 4 bp)` gives
 `delete [1004, 1104)` - the same endpoint arithmetic `replay()` uses to move
 *features* across an edit, turned ninety degrees to move *operations*.
 
-### Two independent ways a merge can fail
+### Three independent ways a merge can fail
 
 **Coordinate conflicts.** The two branches touched the same bases. Reported
 exactly as a text merge reports overlapping hunks, and not forceable - undo one
@@ -336,6 +336,19 @@ tip are not blamed on it. And the refusal is overridable with
 `allow_frame_breaks`, because deliberately building a frameshift mutant is real
 work - blocking by default is the point, blocking absolutely would be
 paternalistic.
+
+**A design rule the merge lands on.** The same shape of failure one level up.
+Two branches each move a ribosome binding site three bases further from its
+start codon; 8 nt becomes 11 either way, still inside the window the literature
+gives. Merged, it is 14, and outside it. Nobody broke anything, the merge did,
+and a rule of severity `error` refuses it — with the same "only what the merge
+introduces" rule as above.
+
+This gate has no override flag. The confidence behind an `error` was already
+checked when the rule was loaded, so nothing can declare itself blocking on a
+number nobody measured; what gets through instead is a *decision*, recorded as
+a `suppress_finding` in the merge commit with a reason attached. See
+[Suppression is an edit](#suppression-is-an-edit-not-metadata).
 
 ### Showing the damage, not just naming it
 
@@ -465,6 +478,8 @@ target: { feature_kind: CDS }
 region: { where: upstream, window: 30 }
 look:   { motif: AGGAGG, strand: same }
 expect: { presence: required, distance_min: 5, distance_max: 13 }
+message: "{feature}: Shine-Dalgarno is {distance} nt from the start codon"
+message_missing: "{feature}: no Shine-Dalgarno in the {window} bases upstream"
 evidence:
   citation: "Shine J, Dalgarno L. PNAS 1974;71(4):1342-6. doi:10.1073/pnas.71.4.1342"
   organism: "Escherichia coli"
@@ -493,8 +508,19 @@ self-consistent without an engineer reading the biology - the collaboration
 runs in parallel instead of queueing behind one person.
 
 `confidence` also caps severity: a `heuristic` rule is refused if it declares
-itself an `error`. A linter that blocks a merge on a number nobody measured
-gets switched off, and it does not come back.
+itself an `error`. That is not a style rule — an `error` finding the merge
+introduces actually refuses the merge, so a linter that blocked one on a number
+nobody measured would get switched off, and it would not come back.
+
+### Two failures, two diagnoses
+
+A motif that is absent and a motif at the wrong spacing are different problems,
+and a biologist does different things about them. One template cannot say both:
+it would have to interpolate a distance that does not exist. So a rule that can
+report an absence writes `message_missing` as well, and Pydantic refuses one
+whose `message` interpolates `{distance}` without it — the bug that check
+prevents shipped once already, as *"Shine-Dalgarno sequence is ? nt from the
+start codon"*.
 
 ### Authoring
 
@@ -570,6 +596,25 @@ is invalidate the evidence, which the digest already catches. So the rebase
 drops the coordinates instead of refusing the merge, and the finding surfaces
 stale on the other side. A note somebody left about a warning should not be
 able to block a merge.
+
+**And it is the only door through the merge gate.** The rebase never conflicts
+on a suppression, but the *merged state* is still linted: an `error` the merge
+introduces refuses it, and a suppression the merge invalidated stops silencing,
+so the finding lands in `new_findings` and the merge bounces. The 409 body
+carries the finding itself — which rule, whose decision, and both readings of
+the window — so the UI needs nothing further to say why:
+
+> **lacZalpha** `rbs-atg-spacing`
+> Somebody had already decided this was deliberate — *"weak RBS on purpose, we
+> are titrating expression"* — but the bases that decision was made about are
+> not these bases any more.
+> `when suppressed  AAAAAAAAAAAAAAAAAACCCCCCCCCCCC`
+> `after the merge  AAAAAAAAAAAAAAAAAACCCCGGGCCCCC`
+
+Merging then requires a reason per blocking finding, which the endpoint turns
+into `suppress_finding` operations appended to the merge commit — computed
+against the evidence in the *merged* state, the only place the finding exists.
+Both decisions end up in the history, in the order they were taken.
 
 Suppressed findings are marked and counted, never dropped: the panel header
 reads *"3 findings, 1 suppressed"*. Hidden ones rot.

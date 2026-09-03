@@ -4,8 +4,14 @@ import { useCallback, useEffect, useState } from "react";
 
 import { DiffView } from "@/components/DiffView";
 import { MergeConflictView } from "@/components/MergeConflictView";
+import { MergeRuleBlock } from "@/components/MergeRuleBlock";
 import { ApiError, api } from "@/lib/api";
-import type { BranchSummary, ConstructDetail, MergePreview } from "@/lib/types";
+import type {
+  BranchSummary,
+  ConstructDetail,
+  MergePreview,
+  MergeSuppression,
+} from "@/lib/types";
 
 interface Props {
   construct: ConstructDetail;
@@ -70,10 +76,14 @@ export function BranchMenu({
       onBranchCreated(created.id);
     });
 
-  const doMerge = (branchId: string, force = false) =>
+  const doMerge = (
+    branchId: string,
+    force = false,
+    suppress: MergeSuppression[] = [],
+  ) =>
     guard(async () => {
       setRefused(null);
-      await api.mergeBranch(construct.id, branchId, force);
+      await api.mergeBranch(construct.id, branchId, force, suppress);
       await reload();
       onMerged();
     });
@@ -163,7 +173,19 @@ export function BranchMenu({
         </div>
       )}
 
-      {refused && refused.conflicts.length === 0 && (
+      {/* Rule errors first: that gate needs a decision, the frame gate only
+          needs a click, and a merge has to clear both. */}
+      {refused && refused.conflicts.length === 0 && refused.new_findings.length > 0 && (
+        <MergeRuleBlock
+          preview={refused}
+          onRecord={(decisions) =>
+            void doMerge(refused.branch_id, false, decisions)
+          }
+          onClose={() => setRefused(null)}
+        />
+      )}
+
+      {refused && refused.conflicts.length === 0 && refused.new_findings.length === 0 && (
         <MergeConflictView
           preview={refused}
           target={construct}

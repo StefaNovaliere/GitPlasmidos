@@ -274,12 +274,14 @@ def _finding(
     )
 
 
-def _render(rule: Rule, feature: Feature, distance: int | str = "?") -> str:
-    return rule.message.format(
+def _render(
+    rule: Rule, feature: Feature, template: str, distance: int | None = None
+) -> str:
+    return template.format(
         feature=feature.name,
         motif=rule.look.motif or rule.look.feature_kind or "",
         window=rule.region.window,
-        distance=distance,
+        distance="" if distance is None else distance,
     )
 
 
@@ -300,14 +302,21 @@ def evaluate(rule: Rule, state: ConstructState) -> list[Finding]:
 
         if rule.expect.presence == "forbidden":
             findings.extend(
-                _finding(rule, feature, _render(rule, feature), hit, evidence)
+                _finding(rule, feature, _render(rule, feature, rule.message), hit, evidence)
                 for hit in hits
             )
             continue
 
         if not hits:
+            # Nothing found is its own diagnosis, and never carries a distance.
             findings.append(
-                _finding(rule, feature, _render(rule, feature), None, evidence)
+                _finding(
+                    rule,
+                    feature,
+                    _render(rule, feature, rule.message_missing or rule.message),
+                    None,
+                    evidence,
+                )
             )
             continue
 
@@ -321,7 +330,13 @@ def evaluate(rule: Rule, state: ConstructState) -> list[Finding]:
         low, high = rule.expect.distance_min, rule.expect.distance_max
         if (low is not None and gap < low) or (high is not None and gap > high):
             findings.append(
-                _finding(rule, feature, _render(rule, feature, gap), closest, evidence)
+                _finding(
+                    rule,
+                    feature,
+                    _render(rule, feature, rule.message, gap),
+                    closest,
+                    evidence,
+                )
             )
 
     return findings

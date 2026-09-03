@@ -9,6 +9,7 @@ import type {
   History,
   ImportResult,
   MergePreview,
+  MergeSuppression,
   OperationKind,
   Orf,
 } from "./types";
@@ -150,12 +151,20 @@ export const api = {
       body: JSON.stringify({ branch_id: branchId }),
     }),
 
-  mergeBranch: (id: string, branchId: string, allowFrameBreaks = false) =>
+  mergeBranch: (
+    id: string,
+    branchId: string,
+    allowFrameBreaks = false,
+    // A design-rule error has no override flag: the only way past it is a
+    // reason, recorded in the merge commit as a suppression.
+    suppress: MergeSuppression[] = [],
+  ) =>
     request<ConstructDetail>(`/api/constructs/${id}/merge`, {
       method: "POST",
       body: JSON.stringify({
         branch_id: branchId,
         allow_frame_breaks: allowFrameBreaks,
+        suppress,
       }),
     }),
 

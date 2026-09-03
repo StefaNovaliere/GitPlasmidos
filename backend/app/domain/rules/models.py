@@ -166,8 +166,34 @@ class Rule(BaseModel):
     expect: Expect
     #: Rendered with {feature}, {distance}, {motif} and {window}.
     message: str
+    #: Used when the rule finds nothing at all. "There is no Shine-Dalgarno
+    #: here" and "there is one, 22 nt away" are two different diagnoses and a
+    #: biologist acts on them differently; one template cannot say both, and
+    #: trying leaves a {distance} with no value to put in it.
+    message_missing: str = ""
     evidence: Evidence
     examples: list[Example] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def _absence_reads_as_an_absence(self) -> Rule:
+        can_be_absent = self.expect.presence == "required"
+        if not can_be_absent and self.message_missing:
+            raise ValueError(
+                "a forbidden hit has no absence to report; drop message_missing"
+            )
+        if "{distance}" in self.message_missing:
+            raise ValueError(
+                "message_missing describes finding nothing, which has no "
+                "distance; drop {distance} from it"
+            )
+        if can_be_absent and "{distance}" in self.message and not self.message_missing:
+            raise ValueError(
+                "this rule can report that it found nothing, and its message "
+                "interpolates {distance}, which has no value in that case. Add "
+                "message_missing: an absent motif and one at the wrong spacing "
+                "are two different diagnoses."
+            )
+        return self
 
     @model_validator(mode="after")
     def _confidence_caps_severity(self) -> Rule:

@@ -205,10 +205,24 @@ export interface MergePreview {
   skipped: MergeConflict[];
   conflicts: MergeConflict[];
   new_frame_issues: FrameIssue[];
+  /**
+   * Design-rule errors the merge itself introduces. A finding whose
+   * suppression the merge invalidated carries both readings of its window in
+   * `suppression.was` / `suppression.now`, so the finding is the whole
+   * explanation of why the merge bounced.
+   */
+  new_findings: Finding[];
   /** What the merge would produce, present whenever the coordinates merged. */
   merged_sequence: string | null;
   merged_length: number | null;
   merged_features: Feature[];
+}
+
+/** "Merge anyway, and here is why" for one blocking finding. */
+export interface MergeSuppression {
+  rule_id: string;
+  feature_id: string;
+  reason: string;
 }
 
 export interface DiffSide {

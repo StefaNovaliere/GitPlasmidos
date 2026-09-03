@@ -249,6 +249,11 @@
       "title": "Message",
       "type": "string"
     },
+    "message_missing": {
+      "default": "",
+      "title": "Message Missing",
+      "type": "string"
+    },
     "evidence": {
       "$ref": "#/$defs/Evidence"
     },

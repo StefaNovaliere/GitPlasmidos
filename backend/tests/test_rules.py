@@ -221,11 +221,54 @@ def test_a_distance_outside_the_range_is_reported_with_the_number():
     spaced = rule(
         expect={"presence": "required", "distance_min": 5, "distance_max": 13},
         message="{feature}: {distance} nt away",
+        message_missing="{feature}: nothing found",
     )
     #  AGGAGG at 0-6, ATG at 26 -> a gap of 20
     sequence = "AGGAGG" + "T" * 20 + "ATGAAA"
     found = evaluate(spaced, state(sequence, [feat(26, 32, id="c", kind="CDS", name="g")]))
     assert len(found) == 1 and "20 nt away" in found[0].message
+
+
+def test_finding_nothing_reads_as_finding_nothing():
+    """Two failures, two diagnoses.
+
+    A motif that is absent and a motif at the wrong spacing are different
+    biological problems, and a biologist acts on them differently. One template
+    cannot say both: it would have to interpolate a distance that does not
+    exist.
+    """
+    spaced = rule(
+        expect={"presence": "required", "distance_min": 5, "distance_max": 13},
+        message="{feature}: Shine-Dalgarno is {distance} nt from the start codon",
+        message_missing="{feature}: no Shine-Dalgarno ({motif}) in the {window} bases upstream",
+    )
+    found = evaluate(
+        spaced, state("T" * 26 + "ATGAAA", [feat(26, 32, id="c", kind="CDS", name="g")])
+    )
+    assert len(found) == 1
+    assert found[0].message == "g: no Shine-Dalgarno (AGGAGG) in the 30 bases upstream"
+
+
+def test_a_rule_that_can_find_nothing_must_say_so_in_its_own_words():
+    with pytest.raises(ValidationError, match="message_missing"):
+        rule(
+            expect={"presence": "required", "distance_max": 13},
+            message="{feature}: {distance} nt away",
+        )
+
+
+def test_message_missing_cannot_interpolate_a_distance_that_does_not_exist():
+    with pytest.raises(ValidationError, match="no distance"):
+        rule(message_missing="{feature}: nothing at {distance} nt")
+
+
+def test_a_forbidden_rule_has_no_absence_to_report():
+    with pytest.raises(ValidationError, match="no absence"):
+        rule(
+            expect={"presence": "forbidden"},
+            message="{feature}: found one",
+            message_missing="{feature}: found none",
+        )
 
 
 def test_a_forbidden_feature_is_reported_where_it_sits():

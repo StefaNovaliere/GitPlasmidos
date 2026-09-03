@@ -13,8 +13,9 @@ Two independent things can go wrong, and they are reported separately:
 * **Coordinate conflicts** — the two branches touched the same bases. Detected
   here, exactly as a text merge reports overlapping hunks.
 * **Biological breakage** — the merge applies cleanly and still ruins a
-  protein. Detected by :func:`app.domain.analysis.check_reading_frames` over
-  the merged state; see :func:`merge_logs`.
+  protein, or lands the construct on a design rule that neither side broke.
+  Detected by :func:`app.domain.analysis.check_reading_frames` and by the rule
+  engine over the merged state; see :func:`merge_logs`.
 
 The second is the interesting one: two edits can be perfectly non-overlapping
 and still combine into a premature stop codon.
@@ -22,6 +23,7 @@ and still combine into a premature stop codon.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 
 from app.domain.analysis import check_reading_frames
@@ -33,6 +35,8 @@ from app.domain.models import (
     OperationError,
 )
 from app.domain.replay import apply_operation, replay
+from app.domain.rules.engine import lint
+from app.domain.rules.models import Finding, Rule
 
 
 class MergeError(ValueError):
@@ -430,6 +434,10 @@ class MergeResult:
     skipped: list[Conflict] = field(default_factory=list)
     #: Frame problems the merge *introduces*, absent from both tips.
     new_frame_issues: list = field(default_factory=list)
+    #: Design-rule errors the merge *introduces*. A finding silenced by a live
+    #: suppression is not one; a suppression the merge turned stale stops
+    #: silencing, so the finding lands here and the merge is refused.
+    new_findings: list[Finding] = field(default_factory=list)
     merged_state: ConstructState | None = None
 
     @property
@@ -441,12 +449,36 @@ class MergeResult:
         return any(i.blocking for i in self.new_frame_issues)
 
     @property
+    def breaks_rules(self) -> bool:
+        return bool(self.new_findings)
+
+    @property
     def clean(self) -> bool:
-        return not self.has_conflicts and not self.breaks_biology
+        return (
+            not self.has_conflicts
+            and not self.breaks_biology
+            and not self.breaks_rules
+        )
 
 
 def _issue_keys(state: ConstructState) -> set[tuple[str, str]]:
     return {(i.feature_name, i.problem) for i in check_reading_frames(state)}
+
+
+def _blocking_keys(
+    state: ConstructState, rules: Sequence[Rule]
+) -> set[tuple[str, str]]:
+    """Design-rule errors already shouting on one tip, so not the merge's fault.
+
+    A finding under a live suppression is not blocking, so it is not in here:
+    if the merge invalidates that suppression the finding starts blocking and
+    the merge wears it, which is exactly the point of the gate.
+    """
+    return {
+        (f.rule_id, f.feature_id or "")
+        for f in lint(list(rules), state)
+        if f.blocking
+    }
 
 
 def merge_logs(
@@ -458,6 +490,7 @@ def merge_logs(
     *,
     is_circular: bool = True,
     construct_id: str = "",
+    rules: Sequence[Rule] = (),
 ) -> MergeResult:
     """Rebase ``branch_ops`` onto the target and report what breaks.
 
@@ -486,6 +519,9 @@ def merge_logs(
 
     ancestor_issues = _issue_keys(ancestor)
     target_issues = _issue_keys(target_state)
+    known_findings = _blocking_keys(ancestor, rules) | _blocking_keys(
+        target_state, rules
+    )
     branch_state = replay(
         base_sequence,
         base_features,
@@ -493,6 +529,7 @@ def merge_logs(
         is_circular=is_circular,
     )
     branch_issues = _issue_keys(branch_state)
+    known_findings |= _blocking_keys(branch_state, rules)
 
     # Rebase each branch operation, apply it, then carry the transform chain
     # across it so the next operation is rebased from the frame it was
@@ -557,5 +594,11 @@ def merge_logs(
         issue
         for issue in check_reading_frames(merged)
         if (issue.feature_name, issue.problem) not in already_known
+    ]
+    result.new_findings = [
+        finding
+        for finding in lint(list(rules), merged)
+        if finding.blocking
+        and (finding.rule_id, finding.feature_id or "") not in known_findings
     ]
     return result
