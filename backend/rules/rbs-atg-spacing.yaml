@@ -29,3 +29,16 @@ examples:
     sequence: AGGAGGTTTTTTTTTTTTTTTTTTTTATGAAAGGGCCCTAA
     features: ["CDS:26-41:+:reporter"]
     triggers: true
+  # Half the genes in a real plasmid are on the minus strand, where the site
+  # reads AGGAGG on the gene's own strand - CCTCCT on the plus strand - and
+  # sits at *higher* coordinates. Both examples below are the same molecule
+  # read from the two sides, and a rule that confuses them passes one and
+  # fails the other.
+  - name: on the minus strand, read in the gene's direction
+    sequence: TTTTTTTTTTTTAGGGCCCTTTCATTTTTTTTTCCTCCTTTTTTT
+    features: ["CDS:10-25:-:reporter"]
+    triggers: false
+  - name: on the minus strand, with the site on the wrong strand
+    sequence: TTTTTTTTTTTTAGGGCCCTTTCATTTTTTTTTAGGAGGTTTTTT
+    features: ["CDS:10-25:-:reporter"]
+    triggers: true

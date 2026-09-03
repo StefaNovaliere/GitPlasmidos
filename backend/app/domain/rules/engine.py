@@ -203,14 +203,16 @@ def _hits(
 
     window_seq = slice_span(state.sequence, start, end, state.is_circular)
     out: list[tuple[int, int]] = []
-    strands = [(window_seq, 1)]
-    if look.strand != "same" or feature.strand == -1:
-        strands.append((revcomp(window_seq), -1))
+    # Both physical strands of the window. Which of them a rule cares about is
+    # decided below, per hit, by the strand it was found on: a hit in the
+    # forward text is on the plus strand, one in the reverse complement is on
+    # the minus strand. A ribosome binding site for a minus-strand gene reads
+    # AGGAGG on the *gene's* strand, which is CCTCCT in the plus-strand text —
+    # matching the literal AGGAGG there instead would accept exactly the
+    # sequences that cannot work and report the ones that can.
+    strands = [(window_seq, 1), (revcomp(window_seq), -1)]
     for text, orientation in strands:
-        # A motif is searched on the strand the target reads, so a minus-strand
-        # target looks at the reverse complement of its window.
-        effective = orientation * (1 if feature.strand != -1 else -1)
-        if not _strand_matches(look, feature, effective):
+        if not _strand_matches(look, feature, orientation):
             continue
         for hit_start, hit_end in find_motif(text, look.motif or "", False):
             if orientation == 1:

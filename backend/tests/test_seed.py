@@ -12,7 +12,8 @@ from app.domain.analysis import check_reading_frames
 from app.domain.merge import merge_logs
 from app.domain.models import Feature, Operation
 from app.domain.replay import replay
-from app.seed import seed
+from app.domain.rules import lint, load_rules
+from app.seed import SCENARIOS, run_sheet, seed
 
 
 @pytest.fixture
@@ -59,6 +60,8 @@ def test_seeding_creates_the_scenarios(db):
         "pUC19 · MCS swap",
         "pUC19 · AmpR +Phe",
         "pUC19 · AmpR +Cys",
+        "pUC19 · RBS spacer (lab A)",
+        "pUC19 · RBS spacer (lab B)",
     }
     assert all(c.description for c in created)
 
@@ -66,14 +69,14 @@ def test_seeding_creates_the_scenarios(db):
 def test_reset_clears_what_was_there_before(db):
     seed(db)
     seed(db, reset=True)
-    assert len(db.scalars(select(Construct)).all()) == 4
+    assert len(db.scalars(select(Construct)).all()) == 6
 
 
 def test_seeding_twice_does_not_duplicate_anything(db):
     seed(db)
     again = seed(db)
     assert again == []
-    assert len(db.scalars(select(Construct)).all()) == 4
+    assert len(db.scalars(select(Construct)).all()) == 6
 
 
 def test_seeding_restores_only_what_is_missing(db):
@@ -84,7 +87,7 @@ def test_seeding_restores_only_what_is_missing(db):
 
     restored = seed(db)
     assert [c.name for c in restored] == ["pUC19 · MCS swap"]
-    assert len(db.scalars(select(Construct)).all()) == 4
+    assert len(db.scalars(select(Construct)).all()) == 6
 
 
 def test_every_seeded_operation_actually_applies(db):
@@ -160,3 +163,56 @@ def test_merging_the_two_ampr_branches_kills_the_protein(db):
     assert issue.feature_name == "bla"
     assert issue.problem == "premature_stop"
     assert issue.codon == 163
+
+
+def test_each_rbs_branch_sits_inside_the_window_on_its_own(db):
+    seed(db)
+    everything = by_name(db)
+    pack = load_rules()
+    for name in ("pUC19 · RBS spacer (lab A)", "pUC19 · RBS spacer (lab B)"):
+        blocking = [
+            f
+            for f in lint(pack, state_of(everything[name]))
+            if f.blocking and f.feature_name == "lacZalpha"
+        ]
+        assert blocking == [], f"{name}: {[f.message for f in blocking]}"
+
+
+def test_merging_the_two_rbs_branches_trips_the_design_rule(db):
+    """The second refusal the demo shows, and it must keep being a refusal."""
+    seed(db)
+    everything = by_name(db)
+    target = everything["pUC19 · RBS spacer (lab A)"]
+    branch = everything["pUC19 · RBS spacer (lab B)"]
+    fork = branch.fork_index
+
+    result = merge_logs(
+        target.base_sequence,
+        [Feature.model_validate(f) for f in target.base_features],
+        ops_of(target)[:fork],
+        ops_of(target)[fork:],
+        ops_of(branch)[fork:],
+        construct_id=target.id,
+        rules=load_rules(),
+    )
+    assert result.conflicts == []
+    assert not result.breaks_biology  # the protein is untouched
+    assert result.breaks_rules
+    (finding,) = result.new_findings
+    assert (finding.rule_id, finding.feature_name) == ("rbs-atg-spacing", "lacZalpha")
+    assert "14 nt" in finding.message
+    # bla has been missing a strong Shine-Dalgarno all along, on both tips.
+    # The merge is not to blame for it and does not get charged with it.
+    assert all(f.feature_name != "bla" for f in result.new_findings)
+
+
+def test_the_run_sheet_links_every_step_of_the_demo(db):
+    seed(db)
+    sheet = "\n".join(run_sheet(db, "http://localhost:3000/"))
+    steps = [s for s in SCENARIOS if s.demo]
+    assert len(steps) == 3
+    for scenario in steps:
+        construct = by_name(db)[scenario.name]
+        assert f"http://localhost:3000/constructs/{construct.id}" in sheet
+    # No trailing slash doubling, whatever the caller passes.
+    assert "//constructs" not in sheet

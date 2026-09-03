@@ -12,6 +12,7 @@ point of the project is that derived state is never written.
 from __future__ import annotations
 
 import argparse
+import textwrap
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -36,11 +37,26 @@ AMPR_SITE = 2001
 AMPR_EDIT_A = "AAT"  # adds a phenylalanine
 AMPR_EDIT_B = "CAG"  # adds a cysteine
 
+#: A ribosome binding site tuned to sit 8 nt from the lacZ-alpha start codon,
+#: comfortably inside the 5-13 nt window the rule pack cites. lacZ-alpha is on
+#: the minus strand, so "upstream" is *higher* coordinates and the site reads
+#: CCTCCT on the plus strand — AGGAGG as the gene itself reads it.
+LACZ_RBS_SITE = 477
+LACZ_RBS = "CCTCCT"
+#: Three bases each, dropped into the spacer between the site and the ATG.
+#: 8 nt becomes 11 either way, still inside the window; together it is 14.
+LACZ_SPACER_A = (473, "TTT")
+LACZ_SPACER_B = (471, "AAA")
+
 
 @dataclass
 class Scenario:
     name: str
     description: str
+    #: What to do on this construct in a live demo. Constructs that carry one
+    #: are printed as numbered steps with their URL, so the demo is a list of
+    #: links rather than a memory test.
+    demo: str = ""
     operations: list[tuple[str, dict]] = field(default_factory=list)
     branches: list[Scenario] = field(default_factory=list)
     #: How many of the parent's operations this branch inherits. ``None``
@@ -57,6 +73,11 @@ SCENARIOS = [
             "The reference cloning vector, 2,686 bp. Start here: the circular "
             "map, the feature list, and the single cutters in the enzyme "
             "panel are all derived from the operation log, which is empty."
+        ),
+        demo=(
+            "Nothing to click. The circular map, the 18 features and the "
+            "single cutters in the enzyme panel are all derived from an "
+            "operation log that is empty."
         ),
         branches=[
             Scenario(
@@ -99,6 +120,12 @@ SCENARIOS = [
             "stop codon and AmpR dies at residue 163."
         ),
         operations=[("insert", {"pos": AMPR_SITE, "seq": AMPR_EDIT_A})],
+        demo=(
+            "Branches → Merge \"pUC19 · AmpR +Cys\". Refused: the two clean "
+            "codons read across a boundary as a stop, and beta-lactamase dies "
+            "at residue 163 of 289. The dialog shows all three reading frames "
+            "as codons."
+        ),
         branches=[
             Scenario(
                 name="pUC19 · AmpR +Cys",
@@ -111,6 +138,43 @@ SCENARIOS = [
                 # concurrent, which is the entire point of the scenario.
                 fork_at=0,
                 operations=[("insert", {"pos": AMPR_SITE, "seq": AMPR_EDIT_B})],
+            ),
+        ],
+    ),
+    Scenario(
+        name="pUC19 · RBS spacer (lab A)",
+        description=(
+            "The 5' untranslated region of lacZ-alpha, with a strong ribosome "
+            "binding site 8 nt from the start codon, and three bases added to "
+            "the spacer. Still inside the 5-13 nt window, so the construct is "
+            "clean. Open Branches → Merge to pull in the other lab's equally "
+            "clean three bases."
+        ),
+        operations=[
+            ("insert", {"pos": LACZ_RBS_SITE, "seq": LACZ_RBS}),
+            ("insert", {"pos": LACZ_SPACER_A[0], "seq": LACZ_SPACER_A[1]}),
+        ],
+        demo=(
+            "Branches → Merge \"pUC19 · RBS spacer (lab B)\". Refused by a "
+            "design rule this time: 8 + 3 + 3 puts the Shine-Dalgarno 14 nt "
+            "from the ATG, outside the window Shine and Dalgarno measured. "
+            "Write a reason and merge anyway — it lands in the history as an "
+            "operation, not as a flag."
+        ),
+        branches=[
+            Scenario(
+                name="pUC19 · RBS spacer (lab B)",
+                description=(
+                    "The other lab's three bases, added at a different point "
+                    "in the same spacer. Also clean on its own: 11 nt is a "
+                    "perfectly good distance."
+                ),
+                # Forked after the site was tuned, before either edit: the two
+                # spacer edits are concurrent, which is the whole point.
+                fork_at=1,
+                operations=[
+                    ("insert", {"pos": LACZ_SPACER_B[0], "seq": LACZ_SPACER_B[1]})
+                ],
             ),
         ],
     ),
@@ -232,6 +296,32 @@ def seed(db: Session, *, reset: bool = False) -> list[Construct]:
     return created
 
 
+def run_sheet(db: Session, base_url: str) -> list[str]:
+    """The demo, as a list of links and one instruction each.
+
+    A live demo typed from memory is a demo that goes wrong in front of the
+    person you wanted to impress. Every scenario that is worth showing carries
+    the sentence describing what to click, and this prints them in order with
+    the URL already resolved.
+    """
+    by_name = {c.name: c for c in db.scalars(select(Construct)).all()}
+    lines: list[str] = []
+    step = 0
+    for scenario in SCENARIOS:
+        construct = by_name.get(scenario.name)
+        if not scenario.demo or construct is None:
+            continue
+        step += 1
+        lines.append(f"  {step}. {scenario.name}")
+        lines.append(f"     {base_url.rstrip('/')}/constructs/{construct.id}")
+        lines.extend(
+            f"     {line}"
+            for line in textwrap.wrap(scenario.demo, width=72)
+        )
+        lines.append("")
+    return lines
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -239,14 +329,16 @@ def main() -> None:
         action="store_true",
         help="delete every existing construct first",
     )
+    parser.add_argument(
+        "--url",
+        default="http://localhost:3000",
+        help="where the frontend is served, for the printed demo links",
+    )
     args = parser.parse_args()
 
     init_db()
     with SessionLocal() as db:
         created = seed(db, reset=args.reset)
-        if not created:
-            print("Everything is already seeded. Use --reset to start over.")
-            return
         for construct in created:
             state = replay(
                 construct.base_sequence,
@@ -269,7 +361,13 @@ def main() -> None:
                 f"{mark}{construct.name}  {state.length:,} bp, "
                 f"{edits} edit{'' if edits == 1 else 's'}  {construct.id}"
             )
-    print(f"\nSeeded {len(created)} constructs into {engine.url}.")
+        if created:
+            print(f"\nSeeded {len(created)} constructs into {engine.url}.")
+        else:
+            print("Everything is already seeded. Use --reset to start over.")
+
+        print("\nDemo, in order:\n")
+        print("\n".join(run_sheet(db, args.url)))
 
 
 if __name__ == "__main__":

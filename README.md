@@ -156,22 +156,50 @@ browser origins with `CORS_ORIGINS` on the backend.
 ### Seed the demo scenarios
 
 ```bash
-cd backend && uv run python -m app.seed      # --reset to start over
+cd backend && uv run python -m app.seed --reset
 ```
 
-Idempotent: running it again restores whatever is missing and leaves the rest
-alone. Constructs can be deleted from the listing, and re-seeded from there.
+It prints a run sheet: every scenario worth showing, in order, with its URL
+already resolved and one sentence saying what to click. A demo typed from
+memory is a demo that goes wrong in front of the person you wanted to impress.
+
+```
+Demo, in order:
+
+  1. pUC19
+     http://localhost:3000/constructs/491fbaf2-…
+     Nothing to click. The circular map, the 18 features and the single
+     cutters in the enzyme panel are all derived from an operation log that
+     is empty.
+
+  2. pUC19 · AmpR +Phe
+     http://localhost:3000/constructs/e53d95a5-…
+     Branches → Merge "pUC19 · AmpR +Cys". Refused: the two clean codons read
+     across a boundary as a stop, and beta-lactamase dies at residue 163 of
+     289. The dialog shows all three reading frames as codons.
+
+  3. pUC19 · RBS spacer (lab A)
+     http://localhost:3000/constructs/866f4dc0-…
+     Branches → Merge "pUC19 · RBS spacer (lab B)". Refused by a design rule
+     this time: 8 + 3 + 3 puts the Shine-Dalgarno 14 nt from the ATG, outside
+     the window Shine and Dalgarno measured. Write a reason and merge anyway
+     — it lands in the history as an operation, not as a flag.
+```
+
+Without `--reset` it is idempotent: running it again restores whatever is
+missing and leaves the rest alone. Constructs can be deleted from the listing,
+and re-seeded from there.
 
 ![The home page after seeding](docs/home.png)
 
-Three things to look at, in order:
+There is a fourth thing worth showing that has no button of its own: on pUC19,
+*Branches → Compare* against the MCS swap. One replaced block, one added
+annotation, four genuinely truncated features, and fourteen that merely
+shifted, reported apart.
 
-1. **pUC19** — 2,686 bp, 18 features, its single cutters in the enzyme panel.
-   All derived from an operation log that is empty.
-2. **pUC19 → MCS swap** — on pUC19, *Branches → Compare*. One replaced block,
-   one added annotation, four genuinely truncated features, and fourteen that
-   merely shifted, reported apart.
-3. **pUC19 · AmpR +Phe → +Cys** — *Branches → Merge*, and watch it be refused.
+Both refusals are asserted in `tests/test_seed.py` — each branch clean on its
+own, the merge blocked for the reason the run sheet claims — so the demo
+cannot quietly stop demonstrating anything.
 
 The third is the one to read closely. Two teams each insert a single codon
 into the beta-lactamase gene at the same site: one adds a phenylalanine, the
@@ -194,9 +222,10 @@ anything.
 cd backend && uv run pytest
 ```
 
-455 tests: one per rebasing rule, explicit wraparound cases, GenBank round
+510 tests: one per rebasing rule, explicit wraparound cases, GenBank round
 trips against two real pUC19 records, reading-frame integrity, log merging,
-diffing, the seeded scenarios, and the HTTP surface end to end.
+design rules and their suppressions, both merge gates, the seeded scenarios,
+and the HTTP surface end to end.
 
 ---
 
@@ -549,10 +578,19 @@ rule into filling a guided form rather than guessing field names.
 The engine reuses the wraparound helpers: a search window is an interval that
 may cross the origin, and a motif search is what enzyme sites already do.
 Motifs are IUPAC-aware, because a consensus written `TTGACR` searched literally
-finds nothing. The genuinely error-prone part is direction - a rule's region is
-expressed in the *target's reading direction*, so "upstream" of a minus-strand
-gene means higher coordinates. There are tests for exactly that, and a mutation
-that ignores strand direction fails two of them.
+finds nothing. The genuinely error-prone part is direction, and it has two
+halves. A rule's region is expressed in the *target's reading direction*, so
+"upstream" of a minus-strand gene means higher coordinates — and the motif is
+matched on the strand that gene reads, so a ribosome binding site for it reads
+`AGGAGG` on the minus strand, which is `CCTCCT` in the plus-strand text.
+
+Getting the second half backwards is the worst kind of bug this project can
+have: it accepts exactly the sequences that cannot work and reports the ones
+that can, on half the genes in the file, without failing anything. It shipped
+that way and was caught while building the demo — on lacZ-alpha, which is on
+the minus strand. `rbs-atg-spacing` now carries two minus-strand examples that
+are the same molecule read from either side, so the pack itself fails if the
+distinction is ever lost again.
 
 ### Which pack judged this
 
@@ -730,4 +768,11 @@ frontend/
   immediately and roll back if the POST fails, but feature positions come from
   the server. Re-implementing the rebasing rules in TypeScript to predict them
   client-side would fork the one thing this project is trying to get right.
+- **The pack digest is recorded on suppressions, not on every operation.**
+  Each suppression stores the pack it was decided against, so a finding can say
+  *"the rules moved underneath you"*. Saying the same about an ordinary edit —
+  *"the pack changed between your last two edits"* — would mean carrying the
+  digest on every operation in the log, which is real weight on 99% of payloads
+  for a warning that today only applies to suppressions. Left as documented
+  debt.
 - No authentication, no multi-user — as specified.
