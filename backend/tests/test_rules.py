@@ -17,7 +17,8 @@ from app.domain.rules.engine import (
     region_span,
 )
 from app.domain.rules.loader import DEFAULT_RULES_DIR, example_state, load_rules
-from app.domain.rules.models import Rule
+from app.domain.rules.models import pack_digest, rule_digest
+from app.domain.rules.models import Rule, RuleSet
 from tests.conftest import feat
 
 MINIMAL = {
@@ -221,11 +222,54 @@ def test_a_distance_outside_the_range_is_reported_with_the_number():
     spaced = rule(
         expect={"presence": "required", "distance_min": 5, "distance_max": 13},
         message="{feature}: {distance} nt away",
+        message_missing="{feature}: nothing found",
     )
     #  AGGAGG at 0-6, ATG at 26 -> a gap of 20
     sequence = "AGGAGG" + "T" * 20 + "ATGAAA"
     found = evaluate(spaced, state(sequence, [feat(26, 32, id="c", kind="CDS", name="g")]))
     assert len(found) == 1 and "20 nt away" in found[0].message
+
+
+def test_finding_nothing_reads_as_finding_nothing():
+    """Two failures, two diagnoses.
+
+    A motif that is absent and a motif at the wrong spacing are different
+    biological problems, and a biologist acts on them differently. One template
+    cannot say both: it would have to interpolate a distance that does not
+    exist.
+    """
+    spaced = rule(
+        expect={"presence": "required", "distance_min": 5, "distance_max": 13},
+        message="{feature}: Shine-Dalgarno is {distance} nt from the start codon",
+        message_missing="{feature}: no Shine-Dalgarno ({motif}) in the {window} bases upstream",
+    )
+    found = evaluate(
+        spaced, state("T" * 26 + "ATGAAA", [feat(26, 32, id="c", kind="CDS", name="g")])
+    )
+    assert len(found) == 1
+    assert found[0].message == "g: no Shine-Dalgarno (AGGAGG) in the 30 bases upstream"
+
+
+def test_a_rule_that_can_find_nothing_must_say_so_in_its_own_words():
+    with pytest.raises(ValidationError, match="message_missing"):
+        rule(
+            expect={"presence": "required", "distance_max": 13},
+            message="{feature}: {distance} nt away",
+        )
+
+
+def test_message_missing_cannot_interpolate_a_distance_that_does_not_exist():
+    with pytest.raises(ValidationError, match="no distance"):
+        rule(message_missing="{feature}: nothing at {distance} nt")
+
+
+def test_a_forbidden_rule_has_no_absence_to_report():
+    with pytest.raises(ValidationError, match="no absence"):
+        rule(
+            expect={"presence": "forbidden"},
+            message="{feature}: found one",
+            message_missing="{feature}: found none",
+        )
 
 
 def test_a_forbidden_feature_is_reported_where_it_sits():
@@ -287,7 +331,7 @@ def test_findings_come_back_errors_first():
         severity="error",
         evidence={**MINIMAL["evidence"], "confidence": "established"},
     )
-    assert [f.severity for f in lint([warn, err], state(seq, features))] == [
+    assert [f.severity for f in lint(RuleSet(rules=[warn, err]), state(seq, features))] == [
         "error",
         "warning",
     ]
@@ -338,3 +382,46 @@ def test_example_shorthand_builds_the_state_it_describes():
     assert (only.kind, only.start, only.end, only.strand, only.name) == (
         "CDS", 2, 8, -1, "gene",
     )
+
+
+# --------------------------------------------------------------------------
+# which pack judged this
+# --------------------------------------------------------------------------
+
+def test_the_pack_digest_does_not_depend_on_the_order_rules_loaded_in():
+    a = rule(id="alpha")
+    b = rule(id="beta")
+    assert pack_digest([a, b]) == pack_digest([b, a])
+    assert pack_digest([a]) != pack_digest([a, b])
+
+
+def test_the_pack_digest_moves_on_a_change_no_single_rule_digest_sees():
+    """Wider than the per-rule digest, deliberately.
+
+    Rewording a message does not change what a rule asserts, so it must not
+    invalidate anybody's suppression - but it does change what the linter says,
+    so the pack is not the same pack.
+    """
+    before, after = rule(), rule(message="{feature}: different words entirely")
+    assert rule_digest(before) == rule_digest(after)
+    assert pack_digest([before]) != pack_digest([after])
+
+
+def test_severity_is_part_of_the_pack_digest():
+    assert pack_digest([rule()]) != pack_digest([rule(severity="info")])
+
+
+def test_examples_are_the_rules_tests_not_the_rules():
+    with_more = rule(
+        examples=[
+            {"name": "x", "sequence": "ACGT", "triggers": False},
+            {"name": "y", "sequence": "TTTT", "triggers": False},
+        ]
+    )
+    assert pack_digest([rule()]) == pack_digest([with_more])
+
+
+def test_the_shipped_pack_reports_a_digest():
+    pack = load_rules()
+    assert len(pack.digest) == 64
+    assert pack.digest == load_rules().digest

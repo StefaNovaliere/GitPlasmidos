@@ -28,11 +28,13 @@ from app.api.schemas import (
     ImportResult,
     MergePreview,
     MergeRequest,
+    MergeSuppression,
     OperationCreate,
     OperationOut,
     OperationsDiffOut,
     OrfOut,
     OrfsOut,
+    RulePackOut,
     SequenceDiffOut,
     SequenceSegmentOut,
 )
@@ -53,7 +55,9 @@ from app.domain.models import (
     SequenceError,
     validate_sequence,
 )
+from app.domain.replay import apply_operation as apply_domain_operation
 from app.domain.replay import replay, validate_feature_bounds
+from app.domain.rules import lint, load_rules, suppression_payload
 from app.domain.seqio import (
     ImportError_,
     export_fasta,
@@ -64,6 +68,10 @@ from app.domain.seqio import (
 router = APIRouter(prefix="/api/constructs", tags=["constructs"])
 
 MAX_UPLOAD_BYTES = 20 * 1024 * 1024
+
+#: The rule pack, read once at import. Rules are data, but they are data that
+#: changes at deploy time, not per request.
+RULES = load_rules()
 
 # Spelled out rather than taken from ``status``: the constant names for these
 # two codes were renamed in Starlette 1.6 and the old ones now warn.
@@ -129,6 +137,15 @@ def _undo_redo_flags(construct: Construct) -> tuple[bool, bool]:
     )
 
 
+def _rule_pack() -> RulePackOut:
+    return RulePackOut(
+        digest=RULES.digest,
+        version=RULES.version,
+        rules=len(RULES.rules),
+        errors=RULES.errors,
+    )
+
+
 def _frame_issue(issue) -> FrameIssueOut:
     return FrameIssueOut(
         feature_id=issue.feature_id,
@@ -160,6 +177,8 @@ def _detail(construct: Construct, state: ConstructState | None = None) -> dict:
         "gc_content": state.gc_content,
         "warnings": state.warnings,
         "frame_issues": [_frame_issue(i) for i in check_reading_frames(state)],
+        "findings": lint(RULES, state),
+        "rule_pack": _rule_pack(),
         "can_undo": can_undo,
         "can_redo": can_redo,
         "created_at": construct.created_at,
@@ -574,6 +593,8 @@ def _preview(branch_id: str, result) -> dict:
         skipped=[to_out(c) for c in result.skipped],
         conflicts=[to_out(c) for c in result.conflicts],
         new_frame_issues=[_frame_issue(i) for i in result.new_frame_issues],
+        new_findings=result.new_findings,
+        rule_pack=_rule_pack(),
         merged_sequence=(
             result.merged_state.sequence if result.merged_state else None
         ),
@@ -638,6 +659,7 @@ def _prepare_merge(target: Construct, branch: Construct):
         _domain_ops(branch_live[_merged_boundary(branch):]),
         is_circular=target.is_circular,
         construct_id=target.id,
+        rules=RULES,
     )
 
 
@@ -649,13 +671,79 @@ def preview_merge(construct_id: str, body: MergeRequest, db: DbSession) -> dict:
     return _preview(branch.id, _prepare_merge(target, branch))
 
 
+def _suppression_ops(
+    result,
+    requests: list[MergeSuppression],
+    *,
+    construct_id: str,
+    next_index: int,
+) -> list[Operation]:
+    """Turn "merge anyway, and here is why" into operations.
+
+    The design-rule gate has exactly one door, and going through it signs the
+    visitors' book: the reason lands in the merge commit as a
+    ``suppress_finding``, against the evidence the engine read in the *merged*
+    state — which is the only place the finding exists, since neither tip has
+    it on its own.
+    """
+    by_key = {(f.rule_id, f.feature_id): f for f in result.new_findings}
+    out: list[Operation] = []
+    for offset, request in enumerate(requests):
+        finding = by_key.get((request.rule_id, request.feature_id))
+        if finding is None:
+            raise HTTPException(
+                HTTP_422_UNPROCESSABLE,
+                f"{request.rule_id!r} on {request.feature_id!r} is not "
+                "blocking this merge; there is nothing to suppress.",
+            )
+        try:
+            payload = suppression_payload(finding, request.reason)
+        except ValueError as exc:
+            raise HTTPException(HTTP_422_UNPROCESSABLE, str(exc)) from exc
+        out.append(
+            Operation(
+                id=_new_id(),
+                construct_id=construct_id,
+                index=next_index + offset,
+                kind="suppress_finding",
+                payload=payload,
+            )
+        )
+    return out
+
+
+def _still_blocking(result, extra: list[Operation]) -> list:
+    """Re-lint the merged state with the suppressions applied.
+
+    Trusting the payload would be enough - it was built from this very state -
+    but the whole gate rests on this list, so it is recomputed rather than
+    reasoned about.
+    """
+    if result.merged_state is None:
+        return list(result.new_findings)
+    merged = result.merged_state.model_copy(deep=True)
+    introduced = {(f.rule_id, f.feature_id) for f in result.new_findings}
+    for op in extra:
+        try:
+            apply_domain_operation(merged, op)
+        except OperationError as exc:
+            raise HTTPException(HTTP_422_UNPROCESSABLE, str(exc)) from exc
+    return [
+        f
+        for f in lint(RULES, merged)
+        if f.blocking and (f.rule_id, f.feature_id) in introduced
+    ]
+
+
 @router.post("/{construct_id}/merge", response_model=ConstructDetail)
 def merge_branch(construct_id: str, body: MergeRequest, db: DbSession) -> dict:
     """Merge a branch into this construct by rebasing its operations.
 
-    Refuses with 409 either when the two logs edited the same bases, or when
-    the merge introduces reading-frame damage that neither side had. The 409
-    body is a :class:`MergePreview` saying which.
+    Refuses with 409 when the two logs edited the same bases, when the merge
+    introduces reading-frame damage that neither side had, or when it lands the
+    construct on a design-rule error that neither side had. The 409 body is a
+    :class:`MergePreview` saying which - and for a rule error the finding
+    itself is the explanation, down to what the window used to read.
     """
     target = _load(db, construct_id)
     branch = _load(db, body.branch_id)
@@ -668,12 +756,27 @@ def merge_branch(construct_id: str, body: MergeRequest, db: DbSession) -> dict:
             status.HTTP_409_CONFLICT, _preview(branch.id, result)
         )
 
+    extra = _suppression_ops(
+        result,
+        body.suppress,
+        construct_id=target.id,
+        next_index=(
+            result.rebased[-1].index + 1 if result.rebased else len(_live(target))
+        ),
+    )
+    remaining = _still_blocking(result, extra)
+    if remaining:
+        result.new_findings = remaining
+        raise HTTPException(
+            status.HTTP_409_CONFLICT, _preview(branch.id, result)
+        )
+
     # Same rule as applying any new operation: a merge discards the redo stack.
     for row in target.operations:
         if row.reverted:
             db.delete(row)
     db.flush()
-    for op in result.rebased:
+    for op in result.rebased + extra:
         db.add(
             OperationRow(
                 id=_new_id(),  # the branch still owns the original row

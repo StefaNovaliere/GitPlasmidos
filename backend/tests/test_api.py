@@ -304,9 +304,8 @@ def test_export_then_reimport_gives_an_equivalent_construct(client):
     reimported = resp.json()
     assert reimported["sequence"] == original["sequence"]
     assert reimported["is_circular"] == original["is_circular"]
-    strip = lambda fs: [
-        {k: v for k, v in f.items() if k != "id"} for f in fs
-    ]
+    def strip(fs):
+        return [{k: v for k, v in f.items() if k != "id"} for f in fs]
     assert strip(reimported["features"]) == strip(original["features"])
 
 
@@ -792,3 +791,331 @@ def test_a_branch_can_keep_working_after_being_merged(client):
     assert client.get(f"/api/constructs/{cid}").json()["length"] == 2692
     history = client.get(f"/api/constructs/{cid}/history").json()
     assert [o["kind"] for o in history["operations"]] == ["insert", "insert"]
+
+
+# ---------------------------------------------------------------------------
+# suppressing a finding
+# ---------------------------------------------------------------------------
+
+#: Filler, a bare upstream window, a CDS, filler. No Shine-Dalgarno anywhere.
+LINTABLE = "A" * 20 + "C" * 12 + "ATGAAAGGGCCCTAA" + "T" * 13
+
+
+def lintable_construct(client) -> dict:
+    created = client.post(
+        "/api/constructs",
+        json={"name": "lintable", "sequence": LINTABLE, "is_circular": True},
+    )
+    assert created.status_code == 201, created.text
+    construct_id = created.json()["id"]
+    annotated = client.post(
+        f"/api/constructs/{construct_id}/operations",
+        json={
+            "kind": "add_feature",
+            "payload": {
+                "feature": {
+                    "id": "cds",
+                    "name": "lacZalpha",
+                    "kind": "CDS",
+                    "start": 32,
+                    "end": 47,
+                    "strand": 1,
+                }
+            },
+        },
+    )
+    assert annotated.status_code == 201, annotated.text
+    return annotated.json()
+
+
+def rbs_finding(detail: dict) -> dict:
+    return next(f for f in detail["findings"] if f["rule_id"] == "rbs-atg-spacing")
+
+
+def test_a_construct_names_the_pack_that_judged_it(client):
+    detail = lintable_construct(client)
+    pack = detail["rule_pack"]
+    assert len(pack["digest"]) == 64
+    assert pack["rules"] == 3 and pack["errors"] == []
+    # And every finding carries it, so a decision can record which rules it
+    # was taken against.
+    assert {f["pack_digest"] for f in detail["findings"]} == {pack["digest"]}
+
+
+def test_a_construct_carries_its_design_rule_findings(client):
+    finding = rbs_finding(lintable_construct(client))
+    assert finding["severity"] == "error"
+    assert finding["suppressed"] is False
+    # The engine hands back the evidence it read, so the client never has to
+    # work out which bases the rule looked at.
+    assert finding["window"]["digest"]
+    assert finding["rule_digest"]
+
+
+def test_suppressing_a_finding_marks_it_without_hiding_it(client):
+    detail = lintable_construct(client)
+    finding = rbs_finding(detail)
+    response = client.post(
+        f"/api/constructs/{detail['id']}/operations",
+        json={
+            "kind": "suppress_finding",
+            "payload": {
+                "rule_id": finding["rule_id"],
+                "feature_id": finding["feature_id"],
+                "reason": "weak RBS on purpose, titrating expression",
+                "window": finding["window"],
+                "rule_digest": finding["rule_digest"],
+            },
+        },
+    )
+    assert response.status_code == 201, response.text
+    suppressed = rbs_finding(response.json())
+    assert suppressed["suppressed"] is True
+    assert suppressed["suppression"]["reason"].startswith("weak RBS")
+    assert suppressed["suppression"]["stale"] is False
+
+    # It is an operation, so undo lifts it like any other edit.
+    undone = client.post(f"/api/constructs/{detail['id']}/undo")
+    assert rbs_finding(undone.json())["suppressed"] is False
+
+
+def test_a_suppression_without_a_reason_is_refused(client):
+    detail = lintable_construct(client)
+    finding = rbs_finding(detail)
+    response = client.post(
+        f"/api/constructs/{detail['id']}/operations",
+        json={
+            "kind": "suppress_finding",
+            "payload": {
+                "rule_id": finding["rule_id"],
+                "feature_id": finding["feature_id"],
+                "reason": "",
+                "window": finding["window"],
+                "rule_digest": finding["rule_digest"],
+            },
+        },
+    )
+    assert response.status_code == 422
+    assert "reason" in response.json()["detail"]
+
+
+def test_editing_the_window_brings_a_suppressed_finding_back(client):
+    detail = lintable_construct(client)
+    finding = rbs_finding(detail)
+    client.post(
+        f"/api/constructs/{detail['id']}/operations",
+        json={
+            "kind": "suppress_finding",
+            "payload": {
+                "rule_id": finding["rule_id"],
+                "feature_id": finding["feature_id"],
+                "reason": "weak RBS on purpose, titrating expression",
+                "window": finding["window"],
+                "rule_digest": finding["rule_digest"],
+            },
+        },
+    )
+    edited = client.post(
+        f"/api/constructs/{detail['id']}/operations",
+        json={"kind": "replace", "payload": {"start": 24, "end": 27, "seq": "GGG"}},
+    )
+    back = rbs_finding(edited.json())
+    assert back["suppressed"] is False
+    assert back["suppression"]["stale"] is True
+    assert back["suppression"]["was"] != back["suppression"]["now"]
+
+
+# ---------------------------------------------------------------------------
+# the design-rule gate on a merge, and the one door through it
+# ---------------------------------------------------------------------------
+
+WEAK_RBS = "weak RBS on purpose, we are titrating expression"
+
+
+def revived_merge(client) -> tuple[str, str]:
+    """A parent and a branch whose merge reopens a decision somebody made.
+
+    The branch annotated a CDS with a deliberately weak ribosome binding site
+    and wrote down why. The parent rewrote the bases that decision was about.
+    Neither side is broken on its own.
+    """
+    parent = client.post(
+        "/api/constructs",
+        json={"name": "pDemo", "sequence": LINTABLE, "is_circular": True},
+    ).json()
+    child = branch_of(client, parent["id"], "weak RBS")
+    annotated = apply(
+        client,
+        child["id"],
+        "add_feature",
+        feature={
+            "id": "cds",
+            "name": "lacZalpha",
+            "kind": "CDS",
+            "start": 32,
+            "end": 47,
+            "strand": 1,
+        },
+    ).json()
+    finding = rbs_finding(annotated)
+    assert apply(
+        client,
+        child["id"],
+        "suppress_finding",
+        rule_id=finding["rule_id"],
+        feature_id=finding["feature_id"],
+        reason=WEAK_RBS,
+        window=finding["window"],
+        rule_digest=finding["rule_digest"],
+    ).status_code == 201
+    assert apply(
+        client, parent["id"], "replace", start=20, end=23, seq="GGG"
+    ).status_code == 201
+    return parent["id"], child["id"]
+
+
+def test_a_merge_that_revives_a_documented_decision_is_refused(client):
+    cid, bid = revived_merge(client)
+    response = merge(client, cid, bid)
+    assert response.status_code == 409
+    detail = response.json()["detail"]
+    assert detail["clean"] is False
+    assert detail["conflicts"] == []  # the coordinates merged fine
+
+    # The finding carries its own explanation, down to both readings of the
+    # window, so the UI can say why this bounced without asking anything else.
+    # The refusal names the rules it was judged against: a gate that can move
+    # on the server without saying so stops being trusted.
+    parent = client.get(f"/api/constructs/{cid}").json()
+    assert detail["rule_pack"]["digest"] == parent["rule_pack"]["digest"]
+
+    (blocked,) = detail["new_findings"]
+    assert blocked["rule_id"] == "rbs-atg-spacing"
+    assert blocked["feature_name"] == "lacZalpha"
+    assert blocked["suppression"]["reason"] == WEAK_RBS
+    assert blocked["suppression"]["stale"] is True
+    assert blocked["suppression"]["was"] != blocked["suppression"]["now"]
+
+
+def test_the_frame_override_does_not_open_the_rule_gate(client):
+    """Different gates, different keys.
+
+    A frameshift mutant is real work somebody may be doing on purpose, so that
+    gate has a flag. A design-rule error opens only against a reason in the
+    log.
+    """
+    cid, bid = revived_merge(client)
+    assert merge(client, cid, bid, allow_frame_breaks=True).status_code == 409
+
+
+def test_recording_the_decision_at_merge_time_lets_it_through(client):
+    cid, bid = revived_merge(client)
+    merged = merge(
+        client,
+        cid,
+        bid,
+        suppress=[
+            {
+                "rule_id": "rbs-atg-spacing",
+                "feature_id": "cds",
+                "reason": "still deliberate, checked against the new upstream",
+            }
+        ],
+    )
+    assert merged.status_code == 200, merged.text
+    finding = rbs_finding(merged.json())
+    assert finding["suppressed"] is True
+    assert finding["suppression"]["stale"] is False
+    assert finding["suppression"]["reason"].startswith("still deliberate")
+
+    # And it went through the front door: the decision is an operation in the
+    # merge commit, not a flag on the request. Both decisions are in the log,
+    # in the order they were taken - the branch's original call, then the one
+    # somebody made looking at the merged sequence.
+    history = client.get(f"/api/constructs/{cid}/history").json()
+    recorded = [o for o in history["operations"] if o["kind"] == "suppress_finding"]
+    assert [o["payload"]["reason"] for o in recorded] == [
+        WEAK_RBS,
+        "still deliberate, checked against the new upstream",
+    ]
+
+
+def test_suppressing_something_that_is_not_blocking_the_merge_is_refused(client):
+    cid, bid = revived_merge(client)
+    response = merge(
+        client,
+        cid,
+        bid,
+        suppress=[
+            {
+                "rule_id": "cds-without-terminator",
+                "feature_id": "cds",
+                "reason": "this warning is not what is blocking anything",
+            }
+        ],
+    )
+    assert response.status_code == 422
+    assert "not blocking" in response.json()["detail"]
+
+
+#: Well spaced, translating cleanly. Each branch will break one thing.
+BOTH_SEQ = "TTTT" + "AGGAGG" + "T" * 8 + "ATG" + "CCC" * 4 + "TAA" + "T" * 24
+
+
+def both_gates(client) -> tuple[str, str]:
+    parent = client.post(
+        "/api/constructs",
+        json={"name": "pBoth", "sequence": BOTH_SEQ, "is_circular": True},
+    ).json()
+    cid = parent["id"]
+    assert apply(
+        client,
+        cid,
+        "add_feature",
+        feature={
+            "id": "cds",
+            "name": "gfp",
+            "kind": "CDS",
+            "start": 18,
+            "end": 36,
+            "strand": 1,
+        },
+    ).status_code == 201
+    child = branch_of(client, cid, "one more codon")
+    for target_id, gap, codon in (
+        (cid, 14, "AAT"),
+        (child["id"], 12, "AAA"),
+    ):
+        assert apply(client, target_id, "insert", pos=gap, seq="TTT").status_code == 201
+        assert apply(client, target_id, "insert", pos=25, seq=codon).status_code == 201
+    return cid, child["id"]
+
+
+def test_a_merge_that_fails_both_gates_reports_both_in_one_refusal(client):
+    """So the UI can put both in one dialog, and settle them in one round."""
+    cid, bid = both_gates(client)
+    detail = merge(client, cid, bid).json()["detail"]
+    assert detail["conflicts"] == []
+    assert [i["problem"] for i in detail["new_frame_issues"]] == ["premature_stop"]
+    assert [f["rule_id"] for f in detail["new_findings"]] == ["rbs-atg-spacing"]
+
+
+def test_both_gates_clear_in_a_single_request(client):
+    cid, bid = both_gates(client)
+    merged = merge(
+        client,
+        cid,
+        bid,
+        allow_frame_breaks=True,
+        suppress=[
+            {
+                "rule_id": "rbs-atg-spacing",
+                "feature_id": "cds",
+                "reason": "truncation and weak initiation are both intended here",
+            }
+        ],
+    )
+    assert merged.status_code == 200, merged.text
+    body = merged.json()
+    assert [i["problem"] for i in body["frame_issues"]] == ["premature_stop"]
+    assert rbs_finding(body)["suppressed"] is True

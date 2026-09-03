@@ -69,6 +69,8 @@ apply "insert"              ✗ deleted     ✗ deleted   [1 insert]  ← new
 | `remove_feature` | `{feature_id}`             |                                           |
 | `update_feature` | `{feature_id, patch}`      |                                           |
 | `set_origin`     | `{pos}`                    | rotates a circular construct              |
+| `suppress_finding`   | `{rule_id, feature_id, reason, window, rule_digest}` | silences one design-rule finding |
+| `unsuppress_finding` | `{rule_id, feature_id}`    | lets it speak again                       |
 
 ---
 
@@ -307,7 +309,7 @@ Rebasing `delete [1000, 1100)` through a preceding `insert(pos=0, 4 bp)` gives
 `delete [1004, 1104)` - the same endpoint arithmetic `replay()` uses to move
 *features* across an edit, turned ninety degrees to move *operations*.
 
-### Two independent ways a merge can fail
+### Three independent ways a merge can fail
 
 **Coordinate conflicts.** The two branches touched the same bases. Reported
 exactly as a text merge reports overlapping hunks, and not forceable - undo one
@@ -334,6 +336,32 @@ tip are not blamed on it. And the refusal is overridable with
 `allow_frame_breaks`, because deliberately building a frameshift mutant is real
 work - blocking by default is the point, blocking absolutely would be
 paternalistic.
+
+**A design rule the merge lands on.** The same shape of failure one level up.
+Two branches each move a ribosome binding site three bases further from its
+start codon; 8 nt becomes 11 either way, still inside the window the literature
+gives. Merged, it is 14, and outside it. Nobody broke anything, the merge did,
+and a rule of severity `error` refuses it — with the same "only what the merge
+introduces" rule as above.
+
+This gate has no override flag. The confidence behind an `error` was already
+checked when the rule was loaded, so nothing can declare itself blocking on a
+number nobody measured; what gets through instead is a *decision*, recorded as
+a `suppress_finding` in the merge commit with a reason attached. See
+[Suppression is an edit](#suppression-is-an-edit-not-metadata).
+
+### One refusal, every reason
+
+A merge has to clear both gates, and clearing one only to be refused by the
+other is worse than being told everything at once. So the 409 carries all of
+it — conflicts, frame damage, rule findings, and the pack that judged them —
+and the dialog settles both in one request: a checkbox for the frameshift, a
+written reason per blocking finding, one `POST` carrying
+`allow_frame_breaks` and the suppressions together.
+
+The two acknowledgements stay different on purpose. A frameshift mutant is
+real work somebody may be doing deliberately, so that gate takes a click. A
+design-rule error takes a sentence, because that sentence goes into the log.
 
 ### Showing the damage, not just naming it
 
@@ -463,6 +491,8 @@ target: { feature_kind: CDS }
 region: { where: upstream, window: 30 }
 look:   { motif: AGGAGG, strand: same }
 expect: { presence: required, distance_min: 5, distance_max: 13 }
+message: "{feature}: Shine-Dalgarno is {distance} nt from the start codon"
+message_missing: "{feature}: no Shine-Dalgarno in the {window} bases upstream"
 evidence:
   citation: "Shine J, Dalgarno L. PNAS 1974;71(4):1342-6. doi:10.1073/pnas.71.4.1342"
   organism: "Escherichia coli"
@@ -491,8 +521,19 @@ self-consistent without an engineer reading the biology - the collaboration
 runs in parallel instead of queueing behind one person.
 
 `confidence` also caps severity: a `heuristic` rule is refused if it declares
-itself an `error`. A linter that blocks a merge on a number nobody measured
-gets switched off, and it does not come back.
+itself an `error`. That is not a style rule — an `error` finding the merge
+introduces actually refuses the merge, so a linter that blocked one on a number
+nobody measured would get switched off, and it would not come back.
+
+### Two failures, two diagnoses
+
+A motif that is absent and a motif at the wrong spacing are different problems,
+and a biologist does different things about them. One template cannot say both:
+it would have to interpolate a distance that does not exist. So a rule that can
+report an absence writes `message_missing` as well, and Pydantic refuses one
+whose `message` interpolates `{distance}` without it — the bug that check
+prevents shipped once already, as *"Shine-Dalgarno sequence is ? nt from the
+start codon"*.
 
 ### Authoring
 
@@ -512,6 +553,103 @@ finds nothing. The genuinely error-prone part is direction - a rule's region is
 expressed in the *target's reading direction*, so "upstream" of a minus-strand
 gene means higher coordinates. There are tests for exactly that, and a mutation
 that ignores strand direction fails two of them.
+
+### Which pack judged this
+
+A gate whose rules can change on the server without anybody noticing stops
+being trusted. So the pack identifies itself: `pack_digest()` hashes every
+loaded rule (minus its examples — those are the rules' tests, not the rules),
+and that digest travels on every response that carries a finding, shows in the
+panel header, and names itself in every refusal.
+
+It is deliberately wider than the per-rule digest. Rewording a message does not
+change what a rule *asserts*, so it must not invalidate anybody's suppression —
+but it does change what the linter says, so it is not the same pack. Each
+suppression records both, which is what separates *"you changed the DNA"* from
+*"somebody changed the rules underneath you"*: the rule digest invalidates,
+the pack digest explains.
+
+The panel also counts what would not load. A rule that vanishes because of a
+YAML typo is a check nobody is running any more, and silence about that is the
+same failure as a suppression that disappears quietly.
+
+### Suppression is an edit, not metadata
+
+Every linter needs a way to say "I know, it is deliberate". The tempting place
+to put that is a field on the construct — and it would quietly break the one
+invariant the whole app rests on. A suppression stored beside the log has no
+author, no undo, no place in a diff, and no defined behaviour under merge.
+
+So it is an operation like any other:
+
+```json
+{
+  "kind": "suppress_finding",
+  "payload": {
+    "rule_id": "rbs-atg-spacing",
+    "feature_id": "lacZalpha",
+    "reason": "weak RBS on purpose, we are titrating expression",
+    "rule_digest": "9c1f…",
+    "window": { "digest": "a3f2…", "excerpt": "AGGAGGTATT", "start": 412, "end": 433 }
+  }
+}
+```
+
+Undo, history, diff and rebase come for free, because they already work on
+operations. `reason` is required: a silenced alarm nobody explained is
+indistinguishable from one somebody switched off.
+
+**What the digest is over, and what it is not.** `digest` covers the text of
+the window the rule read — in the target's *reading direction*, so flipping a
+cassette with `revcomp_region` does not invalidate anything — and nothing else.
+Coordinates are deliberately outside it. That is what makes the interesting
+case work: an insertion a thousand bases upstream moves `start`/`end` without
+changing one base the rule looked at, so the suppression stands. The window is
+never how a suppression finds its finding either; `(rule_id, feature_id)` is,
+and a feature id already survives every coordinate edit. `start`/`end` are
+provenance — carried across edits with the same arithmetic features use, so
+"suppressed on the window at 412..433" keeps pointing at those bases.
+
+**When the evidence does change**, the finding comes back *marked*, quoting
+both readings:
+
+> suppressed when this region read `AGGAGGTATT`; it now reads `AGGAGGTTTT`
+
+Both alternatives are worse. Invalidate silently and people re-suppress after
+every nearby edit, which is how a linter gets switched off. Carry it silently
+and the suppression ends up covering a problem introduced afterwards. Neither
+is acceptable, so a stale suppression is visible and the call goes back to
+whoever made it.
+
+**Under merge it can never conflict.** Mapping a window across an edit that
+landed inside it has no answer — for an `add_feature` that is a conflict, and
+rightly so. A suppression moves no bases: the worst an overlapping edit can do
+is invalidate the evidence, which the digest already catches. So the rebase
+drops the coordinates instead of refusing the merge, and the finding surfaces
+stale on the other side. A note somebody left about a warning should not be
+able to block a merge.
+
+**And it is the only door through the merge gate.** The rebase never conflicts
+on a suppression, but the *merged state* is still linted: an `error` the merge
+introduces refuses it, and a suppression the merge invalidated stops silencing,
+so the finding lands in `new_findings` and the merge bounces. The 409 body
+carries the finding itself — which rule, whose decision, and both readings of
+the window — so the UI needs nothing further to say why:
+
+> **lacZalpha** `rbs-atg-spacing`
+> Somebody had already decided this was deliberate — *"weak RBS on purpose, we
+> are titrating expression"* — but the bases that decision was made about are
+> not these bases any more.
+> `when suppressed  AAAAAAAAAAAAAAAAAACCCCCCCCCCCC`
+> `after the merge  AAAAAAAAAAAAAAAAAACCCCGGGCCCCC`
+
+Merging then requires a reason per blocking finding, which the endpoint turns
+into `suppress_finding` operations appended to the merge commit — computed
+against the evidence in the *merged* state, the only place the finding exists.
+Both decisions end up in the history, in the order they were taken.
+
+Suppressed findings are marked and counted, never dropped: the panel header
+reads *"3 findings, 1 suppressed"*. Hidden ones rot.
 
 ---
 

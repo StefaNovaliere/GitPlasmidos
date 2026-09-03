@@ -3,9 +3,14 @@
 import { useCallback, useEffect, useState } from "react";
 
 import { DiffView } from "@/components/DiffView";
-import { MergeConflictView } from "@/components/MergeConflictView";
+import { MergeBlockedView } from "@/components/MergeBlockedView";
 import { ApiError, api } from "@/lib/api";
-import type { BranchSummary, ConstructDetail, MergePreview } from "@/lib/types";
+import type {
+  BranchSummary,
+  ConstructDetail,
+  MergePreview,
+  MergeSuppression,
+} from "@/lib/types";
 
 interface Props {
   construct: ConstructDetail;
@@ -70,10 +75,14 @@ export function BranchMenu({
       onBranchCreated(created.id);
     });
 
-  const doMerge = (branchId: string, force = false) =>
+  const doMerge = (
+    branchId: string,
+    force = false,
+    suppress: MergeSuppression[] = [],
+  ) =>
     guard(async () => {
       setRefused(null);
-      await api.mergeBranch(construct.id, branchId, force);
+      await api.mergeBranch(construct.id, branchId, force, suppress);
       await reload();
       onMerged();
     });
@@ -163,11 +172,16 @@ export function BranchMenu({
         </div>
       )}
 
+      {/* Both gates in one dialog, settled in one request: clearing one only
+          to be refused by the other is a worse experience than being told
+          everything at once. */}
       {refused && refused.conflicts.length === 0 && (
-        <MergeConflictView
+        <MergeBlockedView
           preview={refused}
           target={construct}
-          onForce={() => void doMerge(refused.branch_id, true)}
+          onSubmit={(allowFrameBreaks, decisions) =>
+            void doMerge(refused.branch_id, allowFrameBreaks, decisions)
+          }
           onClose={() => setRefused(null)}
         />
       )}

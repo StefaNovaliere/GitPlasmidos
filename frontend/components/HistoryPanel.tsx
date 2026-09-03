@@ -32,6 +32,12 @@ function describe(op: OperationRecord): string {
     case "remove_feature":
     case "update_feature":
       return String(op.payload.feature_id ?? "");
+    case "suppress_finding":
+      return `${String(p.rule_id ?? "")} on ${String(p.feature_id ?? "")} — ${String(
+        p.reason ?? "",
+      )}`;
+    case "unsuppress_finding":
+      return `${String(p.rule_id ?? "")} on ${String(p.feature_id ?? "")}`;
     default:
       return "";
   }

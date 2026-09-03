@@ -8,7 +8,9 @@ export type OperationKind =
   | "add_feature"
   | "remove_feature"
   | "update_feature"
-  | "set_origin";
+  | "set_origin"
+  | "suppress_finding"
+  | "unsuppress_finding";
 
 export interface Feature {
   id: string;
@@ -46,6 +48,69 @@ export interface FrameIssue {
   blocking: boolean;
 }
 
+/** Where the numbers in a design rule came from. */
+export interface RuleEvidence {
+  citation: string;
+  organism: string;
+  confidence: "established" | "reported" | "heuristic";
+  notes: string;
+}
+
+/**
+ * The bases a rule read, hashed.
+ *
+ * `digest` is over the window's text alone, so an edit somewhere else moves
+ * `start`/`end` without invalidating anything. Post it back verbatim to
+ * suppress the finding: the engine knows what it looked at.
+ */
+export interface EvidenceWindow {
+  algo: "sha256/1";
+  digest: string;
+  excerpt: string;
+  /** Null once an edit erased the window the rule had read. */
+  start: number | null;
+  end: number | null;
+}
+
+/** Why a finding is quiet, or why it started talking again. */
+export interface SuppressionState {
+  reason: string;
+  /** The bases under the suppression, or the rule itself, changed since. */
+  stale: boolean;
+  changed: "evidence" | "rule" | null;
+  was: string;
+  now: string;
+  /** The pack this decision was taken against. */
+  pack_digest: string;
+}
+
+/** Which rules judged a construct, so a moving gate cannot move in silence. */
+export interface RulePack {
+  digest: string;
+  version: string;
+  rules: number;
+  /** Rule files that would not load. A vanished rule is a check nobody runs. */
+  errors: string[];
+}
+
+/** One thing a design rule reported. Suppressed ones are marked, not dropped. */
+export interface Finding {
+  rule_id: string;
+  title: string;
+  severity: "error" | "warning" | "info";
+  feature_id: string | null;
+  feature_name: string;
+  message: string;
+  start: number | null;
+  end: number | null;
+  evidence: RuleEvidence;
+  window: EvidenceWindow | null;
+  rule_digest: string;
+  pack_digest: string;
+  suppressed: boolean;
+  suppression: SuppressionState | null;
+}
+
 export interface ConstructDetail {
   id: string;
   name: string;
@@ -58,6 +123,8 @@ export interface ConstructDetail {
   gc_content: number;
   warnings: string[];
   frame_issues: FrameIssue[];
+  findings: Finding[];
+  rule_pack: RulePack;
   can_undo: boolean;
   can_redo: boolean;
   created_at: string;
@@ -151,10 +218,25 @@ export interface MergePreview {
   skipped: MergeConflict[];
   conflicts: MergeConflict[];
   new_frame_issues: FrameIssue[];
+  /**
+   * Design-rule errors the merge itself introduces. A finding whose
+   * suppression the merge invalidated carries both readings of its window in
+   * `suppression.was` / `suppression.now`, so the finding is the whole
+   * explanation of why the merge bounced.
+   */
+  new_findings: Finding[];
+  rule_pack: RulePack | null;
   /** What the merge would produce, present whenever the coordinates merged. */
   merged_sequence: string | null;
   merged_length: number | null;
   merged_features: Feature[];
+}
+
+/** "Merge anyway, and here is why" for one blocking finding. */
+export interface MergeSuppression {
+  rule_id: string;
+  feature_id: string;
+  reason: string;
 }
 
 export interface DiffSide {

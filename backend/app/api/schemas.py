@@ -7,6 +7,7 @@ from datetime import datetime
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.domain.models import Feature, OperationKind
+from app.domain.rules.models import Finding
 
 
 class ConstructCreate(BaseModel):
@@ -52,6 +53,22 @@ class FrameIssueOut(BaseModel):
     blocking: bool
 
 
+class RulePackOut(BaseModel):
+    """Which rules judged this construct.
+
+    A gate whose rules can change on the server without anybody noticing stops
+    being trusted, so the pack identifies itself in every response that carries
+    a finding.
+    """
+
+    digest: str
+    version: str
+    rules: int
+    #: Files that would not load. A rule that vanishes silently is a check
+    #: nobody is running any more.
+    errors: list[str] = Field(default_factory=list)
+
+
 class ConstructDetail(BaseModel):
     id: str
     name: str
@@ -64,6 +81,10 @@ class ConstructDetail(BaseModel):
     gc_content: float
     warnings: list[str]
     frame_issues: list[FrameIssueOut]
+    #: Design-rule findings, suppressed ones included and marked as such:
+    #: "3 findings, 1 suppressed" is auditable, a hidden finding is not.
+    findings: list[Finding]
+    rule_pack: RulePackOut
     can_undo: bool
     can_redo: bool
     created_at: datetime
@@ -169,6 +190,13 @@ class MergePreview(BaseModel):
     conflicts: list[ConflictOut] = Field(default_factory=list)
     #: Reading-frame damage the merge itself introduces.
     new_frame_issues: list[FrameIssueOut] = Field(default_factory=list)
+    #: Design-rule errors the merge itself introduces — including a finding
+    #: whose suppression the merge invalidated, which carries both readings of
+    #: the window in ``suppression.was`` / ``suppression.now``. The finding is
+    #: the explanation; the UI needs nothing else to say why the merge bounced.
+    new_findings: list[Finding] = Field(default_factory=list)
+    #: The pack the merge was judged against, so a refusal can name it.
+    rule_pack: RulePackOut | None = None
     #: What the merge would produce. Present whenever the coordinates merged,
     #: including when the result is refused for breaking a reading frame -
     #: showing the damage is the whole point of refusing.
@@ -179,6 +207,16 @@ class MergePreview(BaseModel):
     merged_features: list[Feature] = Field(default_factory=list)
 
 
+class MergeSuppression(BaseModel):
+    """"Merge anyway, and here is why" for one blocking finding."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    rule_id: str
+    feature_id: str
+    reason: str
+
+
 class MergeRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -187,6 +225,11 @@ class MergeRequest(BaseModel):
     #: silently shipping a dead protein is the failure this project exists to
     #: prevent, but deliberately building a frameshift mutant is real work.
     allow_frame_breaks: bool = False
+    #: There is no equivalent flag for design-rule errors. The only way past
+    #: that gate is a suppression, which is an operation: it lands in the
+    #: merge commit with a reason attached, rather than a boolean nobody can
+    #: read back six months later.
+    suppress: list[MergeSuppression] = Field(default_factory=list)
 
 
 class DiffSide(BaseModel):

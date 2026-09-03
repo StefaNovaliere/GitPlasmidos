@@ -17,8 +17,7 @@ const WINDOW = 5;
 interface Props {
   preview: MergePreview;
   target: ConstructDetail;
-  onForce: () => void;
-  onClose: () => void;
+  issue: FrameIssue;
 }
 
 interface Track {
@@ -54,10 +53,15 @@ function trackFor(
   };
 }
 
-export function MergeConflictView({ preview, target, onForce, onClose }: Props) {
+/**
+ * The reading-frame half of a refused merge, read as codons.
+ *
+ * A 409 with a message is not an explanation: three tracks - each branch, then
+ * the projected merge - aligned on the codon that killed the protein.
+ */
+export function FrameBreakBlock({ preview, target, issue }: Props) {
   const [branch, setBranch] = useState<ConstructDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const issue = preview.new_frame_issues.find((i) => i.blocking);
 
   useEffect(() => {
     let live = true;
@@ -71,14 +75,6 @@ export function MergeConflictView({ preview, target, onForce, onClose }: Props) 
       live = false;
     };
   }, [preview.branch_id]);
-
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [onClose]);
-
-  if (!issue) return null;
 
   const tracks: Track[] = [];
   const merged = trackFor(
@@ -115,89 +111,45 @@ export function MergeConflictView({ preview, target, onForce, onClose }: Props) 
       : null;
 
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 p-6"
-      onClick={onClose}
-    >
-      <div
-        className="flex max-h-full w-full max-w-3xl flex-col overflow-hidden rounded-lg bg-white shadow-xl"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <header className="flex items-baseline gap-3 border-b border-slate-200 px-5 py-3">
-          <h2 className="text-sm font-semibold text-slate-900">Merge blocked</h2>
-          <p className="text-xs text-slate-500">
-            The coordinates merge cleanly. The protein does not.
-          </p>
-          <button
-            type="button"
-            onClick={onClose}
-            className="ml-auto rounded px-2 text-slate-400 hover:bg-slate-100"
-            aria-label="Close"
-          >
-            ×
-          </button>
-        </header>
-
-        <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
-          <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
-            <span className="text-sm font-medium text-slate-900">
-              {issue.feature_name}
-            </span>
-            <span className="rounded bg-red-100 px-1.5 py-0.5 text-[11px] font-medium text-red-800">
-              stop at codon {issue.codon}
-            </span>
-            {survivors !== null && merged && (
-              <span className="font-mono text-xs text-slate-500">
-                {survivors} of {merged.total - 1} residues survive
-              </span>
-            )}
-          </div>
-
-          {error && <p className="mt-3 text-xs text-red-700">{error}</p>}
-
-          <div className="mt-4 overflow-x-auto">
-            <div className="inline-block min-w-full space-y-3">
-              {tracks.map((track) => (
-                <CodonTrack key={track.label} track={track} />
-              ))}
-              {!branch && !error && (
-                <p className="text-xs text-slate-400">Loading the branch…</p>
-              )}
-            </div>
-          </div>
-
-          <p className="mt-5 max-w-2xl text-xs leading-relaxed text-slate-600">
-            Neither branch has this problem on its own; the combination created
-            it. The two edits touch no bases in common, so the coordinates
-            merge without complaint — a text-level merge, or a CRDT over the
-            sequence, reports success and hands back a dead protein. Only
-            reading the result as codons finds it.
-          </p>
-        </div>
-
-        <footer className="flex items-center gap-2 border-t border-slate-200 px-5 py-3">
-          <p className="flex-1 text-[11px] text-slate-500">
-            Override only if the truncation is what you meant to build.
-          </p>
-          <button
-            type="button"
-            onClick={onClose}
-            className="rounded border border-slate-300 px-3 py-1 text-xs text-slate-700 hover:bg-slate-100"
-          >
-            Cancel
-          </button>
-          <button
-            type="button"
-            onClick={onForce}
-            className="rounded border border-red-300 bg-white px-3 py-1 text-xs font-medium text-red-800 hover:bg-red-50"
-          >
-            Merge anyway
-          </button>
-        </footer>
+    <section>
+      <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+        <span className="text-sm font-medium text-slate-900">
+          {issue.feature_name}
+        </span>
+        <span className="rounded bg-red-100 px-1.5 py-0.5 text-[11px] font-medium text-red-800">
+          stop at codon {issue.codon}
+        </span>
+        {survivors !== null && merged && (
+          <span className="font-mono text-xs text-slate-500">
+            {survivors} of {merged.total - 1} residues survive
+          </span>
+        )}
       </div>
-    </div>
+
+      {error && <p className="mt-3 text-xs text-red-700">{error}</p>}
+
+      <div className="mt-4 overflow-x-auto">
+        <div className="inline-block min-w-full space-y-3">
+          {tracks.map((track) => (
+            <CodonTrack key={track.label} track={track} />
+          ))}
+          {!branch && !error && (
+            <p className="text-xs text-slate-400">Loading the branch…</p>
+          )}
+        </div>
+      </div>
+
+      <p className="mt-4 max-w-2xl text-xs leading-relaxed text-slate-600">
+        Neither branch has this problem on its own; the combination created it.
+        The two edits touch no bases in common, so the coordinates merge without
+        complaint — a text-level merge, or a CRDT over the sequence, reports
+        success and hands back a dead protein. Only reading the result as codons
+        finds it.
+      </p>
+    </section>
   );
 }
+
 
 function CodonTrack({ track }: { track: Track }) {
   return (

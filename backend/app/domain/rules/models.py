@@ -20,9 +20,14 @@ they are the reason this is worth doing at all:
 
 from __future__ import annotations
 
+import hashlib
+import json
+from collections.abc import Sequence
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+from app.domain.models import EvidenceWindow
 
 #: The alphabet a motif may be written in.
 IUPAC = frozenset("ACGTNRYSWKMBDHV")
@@ -164,8 +169,34 @@ class Rule(BaseModel):
     expect: Expect
     #: Rendered with {feature}, {distance}, {motif} and {window}.
     message: str
+    #: Used when the rule finds nothing at all. "There is no Shine-Dalgarno
+    #: here" and "there is one, 22 nt away" are two different diagnoses and a
+    #: biologist acts on them differently; one template cannot say both, and
+    #: trying leaves a {distance} with no value to put in it.
+    message_missing: str = ""
     evidence: Evidence
     examples: list[Example] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def _absence_reads_as_an_absence(self) -> Rule:
+        can_be_absent = self.expect.presence == "required"
+        if not can_be_absent and self.message_missing:
+            raise ValueError(
+                "a forbidden hit has no absence to report; drop message_missing"
+            )
+        if "{distance}" in self.message_missing:
+            raise ValueError(
+                "message_missing describes finding nothing, which has no "
+                "distance; drop {distance} from it"
+            )
+        if can_be_absent and "{distance}" in self.message and not self.message_missing:
+            raise ValueError(
+                "this rule can report that it found nothing, and its message "
+                "interpolates {distance}, which has no value in that case. Add "
+                "message_missing: an absent motif and one at the wrong spacing "
+                "are two different diagnoses."
+            )
+        return self
 
     @model_validator(mode="after")
     def _confidence_caps_severity(self) -> Rule:
@@ -175,6 +206,84 @@ class Rule(BaseModel):
                 "a number nobody has measured. Use warning or info."
             )
         return self
+
+
+def sha256_hex(text: str) -> str:
+    """The one hash function in the project. Named so it can be found."""
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def rule_digest(rule: Rule) -> str:
+    """Hash of what one rule *asserts*.
+
+    Only the normative fields: a rule whose window widens or whose motif
+    changes is asking a different question, and suppressions of its old answer
+    must not carry over silently. Title, message and notes are excluded on
+    purpose - rewording a rule is not rewriting it, and invalidating every
+    suppression over a typo fix is how people learn to ignore the linter.
+    """
+    return sha256_hex(
+        json.dumps(
+            {
+                "target": rule.target.model_dump(),
+                "region": rule.region.model_dump(),
+                "look": rule.look.model_dump(),
+                "expect": rule.expect.model_dump(),
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+    )
+
+
+def pack_digest(rules: Sequence[Rule]) -> str:
+    """Hash of the whole pack as loaded, order-independent.
+
+    Wider than :func:`rule_digest` on purpose: it covers severity and the
+    message templates too, because a finding only means something against the
+    pack that produced it. Examples are excluded - they are the rules' tests,
+    not the rules.
+
+    What it buys is the sentence nobody can say otherwise: "this bounced
+    against pack a3f2c1, and that is not the pack you were editing against."
+    A pack that changes on the server is otherwise invisible, and invisible
+    changes to a gate are how a gate stops being trusted.
+    """
+    return sha256_hex(
+        "\n".join(
+            sorted(
+                json.dumps(
+                    rule.model_dump(exclude={"examples"}),
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+                for rule in rules
+            )
+        )
+    )
+
+
+class SuppressionState(BaseModel):
+    """Why a finding is quiet, or why it started talking again.
+
+    A suppression never disappears silently and never persists silently. When
+    the evidence under it changed, the finding comes back carrying both
+    readings, and the decision goes back to whoever made it.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    reason: str
+    #: True when the bases the rule reads, or the rule itself, changed since.
+    stale: bool = False
+    changed: Literal["evidence", "rule"] | None = None
+    #: What the window read when it was suppressed, and what it reads now.
+    was: str = ""
+    now: str = ""
+    #: The pack this decision was taken against. Compared with the pack now
+    #: loaded, it separates "you changed the DNA" from "somebody changed the
+    #: rules underneath you".
+    pack_digest: str = ""
 
 
 class Finding(BaseModel):
@@ -196,10 +305,20 @@ class Finding(BaseModel):
     start: int | None = None
     end: int | None = None
     evidence: Evidence
+    #: The bases the rule actually read, hashed. Sent back verbatim in a
+    #: ``suppress_finding`` operation: the engine knows what it looked at, the
+    #: client should not have to guess.
+    window: EvidenceWindow | None = None
+    rule_digest: str = ""
+    #: The pack that produced this finding.
+    pack_digest: str = ""
+    #: Suppressed findings are marked, never dropped. Hidden ones rot.
+    suppressed: bool = False
+    suppression: SuppressionState | None = None
 
     @property
     def blocking(self) -> bool:
-        return self.severity == "error"
+        return self.severity == "error" and not self.suppressed
 
 
 class RuleSet(BaseModel):
@@ -214,3 +333,8 @@ class RuleSet(BaseModel):
     version: str = "unversioned"
     rules: list[Rule] = Field(default_factory=list)
     errors: list[str] = Field(default_factory=list)
+
+    @property
+    def digest(self) -> str:
+        """Computed, never stored: a digest that can go stale is worse than none."""
+        return pack_digest(self.rules)
