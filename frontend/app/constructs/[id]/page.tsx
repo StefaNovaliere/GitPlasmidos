@@ -7,6 +7,7 @@ import { use, useCallback, useEffect, useMemo, useState } from "react";
 import { BranchMenu } from "@/components/BranchMenu";
 import { EnzymePanel } from "@/components/EnzymePanel";
 import { FeatureList } from "@/components/FeatureList";
+import { FindingsPanel } from "@/components/FindingsPanel";
 import { HistoryPanel } from "@/components/HistoryPanel";
 import { SeqVizPane } from "@/components/SeqVizPane";
 import { Toolbar } from "@/components/Toolbar";
@@ -14,7 +15,7 @@ import { useToasts } from "@/components/Toasts";
 import { api } from "@/lib/api";
 import { isActionable } from "@/lib/sequence";
 import { useConstruct } from "@/lib/useConstruct";
-import type { Feature, FrameIssue, SelectionRange } from "@/lib/types";
+import type { Feature, Finding, FrameIssue, SelectionRange } from "@/lib/types";
 
 export default function ConstructPage({
   params,
@@ -89,21 +90,13 @@ export default function ConstructPage({
     setSelectedFeatureId(feature.id);
   }, []);
 
-  /**
-   * Jump to whatever a frame issue is about. A premature stop has one codon to
-   * blame, so go to it; a frameshift does not - the frame is wrong from the
-   * indel onwards - so go to the feature it ruined.
-   */
-  const goToIssue = useCallback(
-    (issue: FrameIssue) => {
+  /** Scroll to a span and select it, falling back to the feature it is about. */
+  const goTo = useCallback(
+    (span: SelectionRange | null, featureId: string | null) => {
       if (!construct) return;
-      const feature = construct.features.find((f) => f.id === issue.feature_id);
+      const feature = construct.features.find((f) => f.id === featureId);
       const target =
-        issue.stop_start !== null && issue.stop_end !== null
-          ? { start: issue.stop_start, end: issue.stop_end }
-          : feature
-            ? { start: feature.start, end: feature.end }
-            : null;
+        span ?? (feature ? { start: feature.start, end: feature.end } : null);
       if (!target) return;
       setSelection(target);
       setSelectedFeatureId(feature?.id ?? null);
@@ -113,6 +106,64 @@ export default function ConstructPage({
       window.setTimeout(() => setFocus(null), 600);
     },
     [construct],
+  );
+
+  /**
+   * A premature stop has one codon to blame, so go to it; a frameshift does
+   * not - the frame is wrong from the indel onwards - so go to the feature it
+   * ruined.
+   */
+  const goToIssue = useCallback(
+    (issue: FrameIssue) =>
+      goTo(
+        issue.stop_start !== null && issue.stop_end !== null
+          ? { start: issue.stop_start, end: issue.stop_end }
+          : null,
+        issue.feature_id,
+      ),
+    [goTo],
+  );
+
+  const goToFinding = useCallback(
+    (finding: Finding) =>
+      goTo(
+        finding.start !== null && finding.end !== null
+          ? { start: finding.start, end: finding.end }
+          : null,
+        finding.feature_id,
+      ),
+    [goTo],
+  );
+
+  /**
+   * Silencing a finding is an edit like any other: it goes in the log, so it
+   * has an author, an undo, a place in the diff and a defined behaviour under
+   * merge. The evidence goes back exactly as the engine computed it - the
+   * client has no business deciding which bases the rule read.
+   */
+  const suppressFinding = useCallback(
+    (finding: Finding, reason: string) => {
+      if (!finding.feature_id || !finding.window) return;
+      void apply("suppress_finding", {
+        rule_id: finding.rule_id,
+        feature_id: finding.feature_id,
+        reason,
+        window: finding.window,
+        rule_digest: finding.rule_digest,
+      });
+    },
+    [apply],
+  );
+
+  const unsuppressFinding = useCallback(
+    (finding: Finding) => {
+      if (!finding.feature_id) return;
+      void apply("unsuppress_finding", {
+        rule_id: finding.rule_id,
+        feature_id: finding.feature_id,
+      });
+    },
+    [apply],
   );
 
   const runOperation = useCallback(
@@ -132,6 +183,9 @@ export default function ConstructPage({
   );
 
   const blockingIssues = construct?.frame_issues.filter((i) => i.blocking) ?? [];
+  const findings = construct?.findings ?? [];
+  const ruleErrors = findings.filter((f) => f.severity === "error" && !f.suppressed);
+  const suppressedCount = findings.filter((f) => f.suppressed).length;
 
   const actionableSelection =
     construct && isActionable(selection, construct.length, construct.is_circular)
@@ -190,6 +244,25 @@ export default function ConstructPage({
           >
             {blockingIssues.length} broken reading frame
             {blockingIssues.length === 1 ? "" : "s"} →
+          </button>
+        )}
+        {ruleErrors.length > 0 && (
+          <button
+            type="button"
+            onClick={() => goToFinding(ruleErrors[0])}
+            title={
+              "Design rules the construct breaks:\n\n" +
+              ruleErrors.map((f) => `${f.message} (${f.rule_id})`).join("\n") +
+              (suppressedCount > 0
+                ? `\n\n${suppressedCount} other finding${
+                    suppressedCount === 1 ? " is" : "s are"
+                  } suppressed.`
+                : "") +
+              "\n\nClick to go there."
+            }
+            className="rounded bg-amber-100 px-1.5 py-0.5 text-[11px] font-medium text-amber-900 hover:bg-amber-200"
+          >
+            {ruleErrors.length} rule error{ruleErrors.length === 1 ? "" : "s"} →
           </button>
         )}
         {pending && (
@@ -265,6 +338,13 @@ export default function ConstructPage({
             onRemove={(feature) =>
               void runOperation("remove_feature", { feature_id: feature.id })
             }
+          />
+          <FindingsPanel
+            findings={findings}
+            busy={pending}
+            onSelect={goToFinding}
+            onSuppress={suppressFinding}
+            onUnsuppress={unsuppressFinding}
           />
           <HistoryPanel
             history={history}

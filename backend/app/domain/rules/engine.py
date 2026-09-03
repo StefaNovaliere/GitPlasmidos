@@ -12,11 +12,20 @@ every rule against the wrong half of the molecule.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import re
 
 from app.domain.circular import revcomp, segments, slice_span
-from app.domain.models import ConstructState, Feature
-from app.domain.rules.models import Finding, Look, Region, Rule, Target
+from app.domain.models import ConstructState, EvidenceWindow, Feature, Suppression
+from app.domain.rules.models import (
+    Finding,
+    Look,
+    Region,
+    Rule,
+    SuppressionState,
+    Target,
+)
 
 #: IUPAC code -> the bases it stands for.
 _IUPAC_BASES = {
@@ -61,6 +70,75 @@ def find_motif(
         if start < length and pattern.fullmatch(haystack[start : start + width]):
             hits.append((start, start + width))
     return sorted(set(hits))
+
+
+# ---------------------------------------------------------------------------
+# evidence: what the rule actually read
+# ---------------------------------------------------------------------------
+
+#: How much of a window is quoted back to the reader.
+EXCERPT_LIMIT = 48
+
+
+def _sha256(text: str) -> str:
+    return hashlib.sha256(text.encode("ascii")).hexdigest()
+
+
+def _excerpt(text: str) -> str:
+    """A quotable piece of a window: the whole thing, or both ends of it."""
+    if len(text) <= EXCERPT_LIMIT:
+        return text
+    half = (EXCERPT_LIMIT - 1) // 2
+    return f"{text[:half]}…{text[-half:]}"
+
+
+def rule_digest(rule: Rule) -> str:
+    """Hash of what the rule *asserts*.
+
+    Only the normative fields: a rule whose window widens or whose motif
+    changes is asking a different question, and suppressions of its old answer
+    must not carry over silently. Title, message and notes are excluded on
+    purpose — rewording a rule is not rewriting it, and invalidating every
+    suppression over a typo fix is how people learn to ignore the linter.
+    """
+    return _sha256(
+        json.dumps(
+            {
+                "target": rule.target.model_dump(),
+                "region": rule.region.model_dump(),
+                "look": rule.look.model_dump(),
+                "expect": rule.expect.model_dump(),
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+    )
+
+
+def window_text(
+    span: tuple[int, int], feature: Feature, state: ConstructState
+) -> str:
+    """The window as the rule read it: in the target's reading direction.
+
+    Reading direction, not genomic order, is what makes a suppression survive a
+    ``revcomp_region`` that flips the whole cassette: the bases the rule sees
+    are the same ones, so the digest is the same and the decision stands.
+    """
+    text = slice_span(state.sequence, span[0], span[1], state.is_circular)
+    return text if feature.strand != -1 else revcomp(text)
+
+
+def evidence_window(
+    span: tuple[int, int], feature: Feature, state: ConstructState
+) -> EvidenceWindow:
+    """Hash the bases a rule looked at, and remember where they were."""
+    text = window_text(span, feature, state)
+    return EvidenceWindow(
+        digest=_sha256(text),
+        excerpt=_excerpt(text),
+        start=span[0],
+        end=span[1],
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -175,7 +253,11 @@ def _hits(
 
 
 def _finding(
-    rule: Rule, feature: Feature, message: str, span: tuple[int, int] | None
+    rule: Rule,
+    feature: Feature,
+    message: str,
+    span: tuple[int, int] | None,
+    window: EvidenceWindow,
 ) -> Finding:
     return Finding(
         rule_id=rule.id,
@@ -187,6 +269,8 @@ def _finding(
         start=span[0] if span else None,
         end=span[1] if span else None,
         evidence=rule.evidence,
+        window=window,
+        rule_digest=rule_digest(rule),
     )
 
 
@@ -209,15 +293,22 @@ def evaluate(rule: Rule, state: ConstructState) -> list[Finding]:
     for feature in _targets(rule.target, state):
         window = region_span(rule.region, feature, length, state.is_circular)
         hits = _hits(rule.look, window, feature, state)
+        # Hashed once per target, not per finding: the evidence is the window
+        # the rule inspected, which is the same for every finding it raises
+        # about this feature.
+        evidence = evidence_window(window, feature, state)
 
         if rule.expect.presence == "forbidden":
             findings.extend(
-                _finding(rule, feature, _render(rule, feature), hit) for hit in hits
+                _finding(rule, feature, _render(rule, feature), hit, evidence)
+                for hit in hits
             )
             continue
 
         if not hits:
-            findings.append(_finding(rule, feature, _render(rule, feature), None))
+            findings.append(
+                _finding(rule, feature, _render(rule, feature), None, evidence)
+            )
             continue
 
         if rule.expect.distance_min is None and rule.expect.distance_max is None:
@@ -230,14 +321,78 @@ def evaluate(rule: Rule, state: ConstructState) -> list[Finding]:
         low, high = rule.expect.distance_min, rule.expect.distance_max
         if (low is not None and gap < low) or (high is not None and gap > high):
             findings.append(
-                _finding(rule, feature, _render(rule, feature, gap), closest)
+                _finding(rule, feature, _render(rule, feature, gap), closest, evidence)
             )
 
     return findings
 
 
+def apply_suppression(finding: Finding, suppression: Suppression | None) -> Finding:
+    """Mark a finding against the decision somebody recorded about it.
+
+    Three outcomes, and the middle one is the whole point:
+
+    * no suppression — the finding stands,
+    * a suppression whose evidence still matches — quiet, but still counted,
+    * a suppression whose evidence moved on — the finding is back, carrying
+      both readings, and the call goes to whoever made it.
+
+    Invalidating a suppression automatically would have people re-suppressing
+    every time they edit nearby, which is how a linter gets switched off.
+    Carrying it silently would let it cover a problem introduced afterwards.
+    Neither is acceptable, so a stale suppression is *visible*.
+    """
+    if suppression is None:
+        return finding
+    marked = finding.model_copy(deep=True)
+    changed: str | None = None
+    if suppression.rule_digest != finding.rule_digest:
+        changed = "rule"
+    elif finding.window is None or suppression.window.digest != finding.window.digest:
+        changed = "evidence"
+    marked.suppressed = changed is None
+    marked.suppression = SuppressionState(
+        reason=suppression.reason,
+        stale=changed is not None,
+        changed=changed,
+        was=suppression.window.excerpt if changed else "",
+        now=(finding.window.excerpt if finding.window else "") if changed else "",
+    )
+    return marked
+
+
+def suppression_payload(finding: Finding, reason: str) -> dict:
+    """The ``suppress_finding`` payload that silences ``finding``.
+
+    Defined next to the engine that computed the evidence so that the shape of
+    the payload has exactly one author. Callers pass the finding back rather
+    than reconstructing which bases the rule read.
+    """
+    if finding.feature_id is None or finding.window is None:
+        raise ValueError("a finding with no feature and no window cannot be suppressed")
+    return {
+        "rule_id": finding.rule_id,
+        "feature_id": finding.feature_id,
+        "reason": reason,
+        "window": finding.window.model_dump(),
+        "rule_digest": finding.rule_digest,
+    }
+
+
 def lint(rules: list[Rule], state: ConstructState) -> list[Finding]:
-    """Run a whole pack. Errors first, then by position."""
+    """Run a whole pack over a state, honouring its suppressions.
+
+    Suppressed findings are marked and kept, never dropped: a count of
+    "3 findings, 1 suppressed" is auditable, and a hidden one rots.
+    """
     order = {"error": 0, "warning": 1, "info": 2}
-    findings = [f for rule in rules for f in evaluate(rule, state)]
-    return sorted(findings, key=lambda f: (order[f.severity], f.start or 0))
+    silenced = {(s.rule_id, s.feature_id): s for s in state.suppressions}
+    findings = [
+        apply_suppression(f, silenced.get((f.rule_id, f.feature_id)))
+        for rule in rules
+        for f in evaluate(rule, state)
+    ]
+    return sorted(
+        findings,
+        key=lambda f: (f.suppressed, order[f.severity], f.start or 0),
+    )

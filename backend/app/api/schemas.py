@@ -7,6 +7,7 @@ from datetime import datetime
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.domain.models import Feature, OperationKind
+from app.domain.rules.models import Finding
 
 
 class ConstructCreate(BaseModel):
@@ -64,6 +65,9 @@ class ConstructDetail(BaseModel):
     gc_content: float
     warnings: list[str]
     frame_issues: list[FrameIssueOut]
+    #: Design-rule findings, suppressed ones included and marked as such:
+    #: "3 findings, 1 suppressed" is auditable, a hidden finding is not.
+    findings: list[Finding]
     can_undo: bool
     can_redo: bool
     created_at: datetime

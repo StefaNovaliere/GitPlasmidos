@@ -10,7 +10,7 @@ This module is pure: no I/O, no FastAPI, no SQLAlchemy.
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 
 from app.domain.circular import (
     recombine,
@@ -24,6 +24,7 @@ from app.domain.models import (
     Feature,
     Operation,
     OperationError,
+    Suppression,
     validate_sequence,
 )
 
@@ -230,6 +231,44 @@ def rebase_rotate(
     return out
 
 
+Move = Callable[[list[Feature]], list[Feature]]
+
+
+def carry_windows(suppressions: Iterable[Suppression], move: Move) -> list[Suppression]:
+    """Move each suppression's evidence window across an edit.
+
+    A window is not a feature, but it is an interval over the same bases, so it
+    moves by exactly the same rule — which is why it is pushed through the same
+    function instead of a second implementation free to drift from it.
+
+    None of this is what keeps a suppression attached to its finding: that is
+    the ``(rule_id, feature_id)`` key, and the window the rule reads is
+    recomputed from the feature on every lint. These coordinates exist so the
+    audit trail can point at the right bases. A window an edit erased loses
+    them, and its digest stops matching, so the finding resurfaces as stale.
+    """
+    out: list[Suppression] = []
+    for s in suppressions:
+        carried = s.model_copy(deep=True)
+        window = carried.window
+        if window.start is None or window.end is None:
+            out.append(carried)
+            continue
+        proxy = Feature(
+            id=f"{s.rule_id}@{s.feature_id}",
+            name=s.rule_id,
+            start=window.start,
+            end=window.end,
+        )
+        moved = move([proxy])
+        if moved:
+            window.start, window.end = moved[0].start, moved[0].end
+        else:  # the edit took every base the rule had looked at
+            window.start = window.end = None
+        out.append(carried)
+    return out
+
+
 # ---------------------------------------------------------------------------
 # operation application
 # ---------------------------------------------------------------------------
@@ -260,6 +299,9 @@ def _apply_rotate(state: ConstructState, origin: int) -> None:
         return
     state.sequence = rotate_sequence(state.sequence, origin)
     state.features = rebase_rotate(state.features, origin, length)
+    state.suppressions = carry_windows(
+        state.suppressions, lambda fs: rebase_rotate(fs, origin, length)
+    )
 
 
 def _apply_insert(state: ConstructState, pos: int, seq: str) -> None:
@@ -278,6 +320,10 @@ def _apply_insert(state: ConstructState, pos: int, seq: str) -> None:
     state.sequence = state.sequence[:pos] + seq + state.sequence[pos:]
     state.features, warns = rebase_insert(
         state.features, pos, len(seq), length, state.is_circular
+    )
+    state.suppressions = carry_windows(
+        state.suppressions,
+        lambda fs: rebase_insert(fs, pos, len(seq), length, state.is_circular)[0],
     )
     state.warnings.extend(warns)
 
@@ -300,6 +346,10 @@ def _apply_delete(state: ConstructState, start: int, end: int) -> bool:
     state.features, warns = rebase_delete(
         state.features, start, end, length, state.is_circular
     )
+    state.suppressions = carry_windows(
+        state.suppressions,
+        lambda fs: rebase_delete(fs, start, end, length, state.is_circular)[0],
+    )
     state.warnings.extend(warns)
     return wraps
 
@@ -313,6 +363,10 @@ def _apply_revcomp_linear(state: ConstructState, start: int, end: int) -> None:
     )
     state.features, warns = rebase_revcomp(
         state.features, start, end, length, state.is_circular
+    )
+    state.suppressions = carry_windows(
+        state.suppressions,
+        lambda fs: rebase_revcomp(fs, start, end, length, state.is_circular)[0],
     )
     state.warnings.extend(warns)
 
@@ -349,6 +403,9 @@ def _apply_remove_feature(state: ConstructState, feature_id: str) -> None:
     if len(kept) == len(state.features):
         raise OperationError(f"remove_feature: no feature with id {feature_id!r}")
     state.features = kept
+    # No feature, no finding, so nothing left to silence. Undo brings both back
+    # together, because this is derived on every replay rather than stored.
+    state.suppressions = [s for s in state.suppressions if s.feature_id != feature_id]
 
 
 _PATCHABLE = {"name", "kind", "start", "end", "strand", "color", "truncated"}
@@ -374,6 +431,49 @@ def _apply_update_feature(
         state.features[i] = updated
         return
     raise OperationError(f"update_feature: no feature with id {feature_id!r}")
+
+
+def _apply_suppress(state: ConstructState, payload: dict) -> None:
+    """Record a decision not to act on a finding.
+
+    The payload *is* the suppression: ``rule_id`` and ``feature_id`` identify
+    the finding, ``reason`` says why somebody silenced it, and ``window``
+    carries the digest of the bases the rule read when they did.
+    """
+    try:
+        suppression = Suppression.model_validate(payload)
+    except Exception as exc:  # pydantic ValidationError
+        raise OperationError(f"suppress_finding: invalid payload ({exc})") from exc
+    if not any(f.id == suppression.feature_id for f in state.features):
+        raise OperationError(
+            f"suppress_finding: no feature with id {suppression.feature_id!r}"
+        )
+    # Suppressing the same finding twice replaces the evidence rather than
+    # stacking: that is exactly what somebody who read a stale suppression and
+    # decided to keep it did.
+    state.suppressions = [
+        s
+        for s in state.suppressions
+        if (s.rule_id, s.feature_id)
+        != (suppression.rule_id, suppression.feature_id)
+    ] + [suppression]
+
+
+def _apply_unsuppress(state: ConstructState, rule_id: str, feature_id: str) -> None:
+    """Let a finding speak again.
+
+    Undo only reaches the end of the log, so without this a suppression made
+    twenty edits ago could never be lifted.
+    """
+    kept = [
+        s for s in state.suppressions if (s.rule_id, s.feature_id) != (rule_id, feature_id)
+    ]
+    if len(kept) == len(state.suppressions):
+        raise OperationError(
+            f"unsuppress_finding: {rule_id!r} is not suppressed on feature "
+            f"{feature_id!r}"
+        )
+    state.suppressions = kept
 
 
 def apply_operation(state: ConstructState, op: Operation) -> None:
@@ -421,6 +521,14 @@ def apply_operation(state: ConstructState, op: Operation) -> None:
         _apply_rotate(
             state, _as_int(_require(p, "pos", "set_origin"), "set_origin", "pos")
         )
+    elif kind == "suppress_finding":
+        _apply_suppress(state, p)
+    elif kind == "unsuppress_finding":
+        _apply_unsuppress(
+            state,
+            _require(p, "rule_id", "unsuppress_finding"),
+            _require(p, "feature_id", "unsuppress_finding"),
+        )
     else:  # pragma: no cover - Operation.kind is a Literal
         raise OperationError(f"unknown operation kind {kind!r}")
 
@@ -451,6 +559,7 @@ def replay(
         features=[f.model_copy(deep=True) for f in base_features],
         is_circular=is_circular,
         warnings=[],
+        suppressions=[],
     )
     for op in sorted(ops, key=lambda o: o.index):
         if op.reverted:

@@ -24,6 +24,8 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from app.domain.models import EvidenceWindow
+
 #: The alphabet a motif may be written in.
 IUPAC = frozenset("ACGTNRYSWKMBDHV")
 
@@ -177,6 +179,25 @@ class Rule(BaseModel):
         return self
 
 
+class SuppressionState(BaseModel):
+    """Why a finding is quiet, or why it started talking again.
+
+    A suppression never disappears silently and never persists silently. When
+    the evidence under it changed, the finding comes back carrying both
+    readings, and the decision goes back to whoever made it.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    reason: str
+    #: True when the bases the rule reads, or the rule itself, changed since.
+    stale: bool = False
+    changed: Literal["evidence", "rule"] | None = None
+    #: What the window read when it was suppressed, and what it reads now.
+    was: str = ""
+    now: str = ""
+
+
 class Finding(BaseModel):
     """One thing a rule reported about a construct.
 
@@ -196,10 +217,18 @@ class Finding(BaseModel):
     start: int | None = None
     end: int | None = None
     evidence: Evidence
+    #: The bases the rule actually read, hashed. Sent back verbatim in a
+    #: ``suppress_finding`` operation: the engine knows what it looked at, the
+    #: client should not have to guess.
+    window: EvidenceWindow | None = None
+    rule_digest: str = ""
+    #: Suppressed findings are marked, never dropped. Hidden ones rot.
+    suppressed: bool = False
+    suppression: SuppressionState | None = None
 
     @property
     def blocking(self) -> bool:
-        return self.severity == "error"
+        return self.severity == "error" and not self.suppressed
 
 
 class RuleSet(BaseModel):

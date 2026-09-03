@@ -54,6 +54,7 @@ from app.domain.models import (
     validate_sequence,
 )
 from app.domain.replay import replay, validate_feature_bounds
+from app.domain.rules import lint, load_rules
 from app.domain.seqio import (
     ImportError_,
     export_fasta,
@@ -64,6 +65,10 @@ from app.domain.seqio import (
 router = APIRouter(prefix="/api/constructs", tags=["constructs"])
 
 MAX_UPLOAD_BYTES = 20 * 1024 * 1024
+
+#: The rule pack, read once at import. Rules are data, but they are data that
+#: changes at deploy time, not per request.
+RULES = load_rules()
 
 # Spelled out rather than taken from ``status``: the constant names for these
 # two codes were renamed in Starlette 1.6 and the old ones now warn.
@@ -160,6 +165,7 @@ def _detail(construct: Construct, state: ConstructState | None = None) -> dict:
         "gc_content": state.gc_content,
         "warnings": state.warnings,
         "frame_issues": [_frame_issue(i) for i in check_reading_frames(state)],
+        "findings": lint(RULES.rules, state),
         "can_undo": can_undo,
         "can_redo": can_redo,
         "created_at": construct.created_at,

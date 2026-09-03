@@ -69,6 +69,8 @@ apply "insert"              ✗ deleted     ✗ deleted   [1 insert]  ← new
 | `remove_feature` | `{feature_id}`             |                                           |
 | `update_feature` | `{feature_id, patch}`      |                                           |
 | `set_origin`     | `{pos}`                    | rotates a circular construct              |
+| `suppress_finding`   | `{rule_id, feature_id, reason, window, rule_digest}` | silences one design-rule finding |
+| `unsuppress_finding` | `{rule_id, feature_id}`    | lets it speak again                       |
 
 ---
 
@@ -512,6 +514,65 @@ finds nothing. The genuinely error-prone part is direction - a rule's region is
 expressed in the *target's reading direction*, so "upstream" of a minus-strand
 gene means higher coordinates. There are tests for exactly that, and a mutation
 that ignores strand direction fails two of them.
+
+### Suppression is an edit, not metadata
+
+Every linter needs a way to say "I know, it is deliberate". The tempting place
+to put that is a field on the construct — and it would quietly break the one
+invariant the whole app rests on. A suppression stored beside the log has no
+author, no undo, no place in a diff, and no defined behaviour under merge.
+
+So it is an operation like any other:
+
+```json
+{
+  "kind": "suppress_finding",
+  "payload": {
+    "rule_id": "rbs-atg-spacing",
+    "feature_id": "lacZalpha",
+    "reason": "weak RBS on purpose, we are titrating expression",
+    "rule_digest": "9c1f…",
+    "window": { "digest": "a3f2…", "excerpt": "AGGAGGTATT", "start": 412, "end": 433 }
+  }
+}
+```
+
+Undo, history, diff and rebase come for free, because they already work on
+operations. `reason` is required: a silenced alarm nobody explained is
+indistinguishable from one somebody switched off.
+
+**What the digest is over, and what it is not.** `digest` covers the text of
+the window the rule read — in the target's *reading direction*, so flipping a
+cassette with `revcomp_region` does not invalidate anything — and nothing else.
+Coordinates are deliberately outside it. That is what makes the interesting
+case work: an insertion a thousand bases upstream moves `start`/`end` without
+changing one base the rule looked at, so the suppression stands. The window is
+never how a suppression finds its finding either; `(rule_id, feature_id)` is,
+and a feature id already survives every coordinate edit. `start`/`end` are
+provenance — carried across edits with the same arithmetic features use, so
+"suppressed on the window at 412..433" keeps pointing at those bases.
+
+**When the evidence does change**, the finding comes back *marked*, quoting
+both readings:
+
+> suppressed when this region read `AGGAGGTATT`; it now reads `AGGAGGTTTT`
+
+Both alternatives are worse. Invalidate silently and people re-suppress after
+every nearby edit, which is how a linter gets switched off. Carry it silently
+and the suppression ends up covering a problem introduced afterwards. Neither
+is acceptable, so a stale suppression is visible and the call goes back to
+whoever made it.
+
+**Under merge it can never conflict.** Mapping a window across an edit that
+landed inside it has no answer — for an `add_feature` that is a conflict, and
+rightly so. A suppression moves no bases: the worst an overlapping edit can do
+is invalidate the evidence, which the digest already catches. So the rebase
+drops the coordinates instead of refusing the merge, and the finding surfaces
+stale on the other side. A note somebody left about a warning should not be
+able to block a merge.
+
+Suppressed findings are marked and counted, never dropped: the panel header
+reads *"3 findings, 1 suppressed"*. Hidden ones rot.
 
 ---
 

@@ -304,9 +304,8 @@ def test_export_then_reimport_gives_an_equivalent_construct(client):
     reimported = resp.json()
     assert reimported["sequence"] == original["sequence"]
     assert reimported["is_circular"] == original["is_circular"]
-    strip = lambda fs: [
-        {k: v for k, v in f.items() if k != "id"} for f in fs
-    ]
+    def strip(fs):
+        return [{k: v for k, v in f.items() if k != "id"} for f in fs]
     assert strip(reimported["features"]) == strip(original["features"])
 
 
@@ -792,3 +791,125 @@ def test_a_branch_can_keep_working_after_being_merged(client):
     assert client.get(f"/api/constructs/{cid}").json()["length"] == 2692
     history = client.get(f"/api/constructs/{cid}/history").json()
     assert [o["kind"] for o in history["operations"]] == ["insert", "insert"]
+
+
+# ---------------------------------------------------------------------------
+# suppressing a finding
+# ---------------------------------------------------------------------------
+
+#: Filler, a bare upstream window, a CDS, filler. No Shine-Dalgarno anywhere.
+LINTABLE = "A" * 20 + "C" * 12 + "ATGAAAGGGCCCTAA" + "T" * 13
+
+
+def lintable_construct(client) -> dict:
+    created = client.post(
+        "/api/constructs",
+        json={"name": "lintable", "sequence": LINTABLE, "is_circular": True},
+    )
+    assert created.status_code == 201, created.text
+    construct_id = created.json()["id"]
+    annotated = client.post(
+        f"/api/constructs/{construct_id}/operations",
+        json={
+            "kind": "add_feature",
+            "payload": {
+                "feature": {
+                    "id": "cds",
+                    "name": "lacZalpha",
+                    "kind": "CDS",
+                    "start": 32,
+                    "end": 47,
+                    "strand": 1,
+                }
+            },
+        },
+    )
+    assert annotated.status_code == 201, annotated.text
+    return annotated.json()
+
+
+def rbs_finding(detail: dict) -> dict:
+    return next(f for f in detail["findings"] if f["rule_id"] == "rbs-atg-spacing")
+
+
+def test_a_construct_carries_its_design_rule_findings(client):
+    finding = rbs_finding(lintable_construct(client))
+    assert finding["severity"] == "error"
+    assert finding["suppressed"] is False
+    # The engine hands back the evidence it read, so the client never has to
+    # work out which bases the rule looked at.
+    assert finding["window"]["digest"]
+    assert finding["rule_digest"]
+
+
+def test_suppressing_a_finding_marks_it_without_hiding_it(client):
+    detail = lintable_construct(client)
+    finding = rbs_finding(detail)
+    response = client.post(
+        f"/api/constructs/{detail['id']}/operations",
+        json={
+            "kind": "suppress_finding",
+            "payload": {
+                "rule_id": finding["rule_id"],
+                "feature_id": finding["feature_id"],
+                "reason": "weak RBS on purpose, titrating expression",
+                "window": finding["window"],
+                "rule_digest": finding["rule_digest"],
+            },
+        },
+    )
+    assert response.status_code == 201, response.text
+    suppressed = rbs_finding(response.json())
+    assert suppressed["suppressed"] is True
+    assert suppressed["suppression"]["reason"].startswith("weak RBS")
+    assert suppressed["suppression"]["stale"] is False
+
+    # It is an operation, so undo lifts it like any other edit.
+    undone = client.post(f"/api/constructs/{detail['id']}/undo")
+    assert rbs_finding(undone.json())["suppressed"] is False
+
+
+def test_a_suppression_without_a_reason_is_refused(client):
+    detail = lintable_construct(client)
+    finding = rbs_finding(detail)
+    response = client.post(
+        f"/api/constructs/{detail['id']}/operations",
+        json={
+            "kind": "suppress_finding",
+            "payload": {
+                "rule_id": finding["rule_id"],
+                "feature_id": finding["feature_id"],
+                "reason": "",
+                "window": finding["window"],
+                "rule_digest": finding["rule_digest"],
+            },
+        },
+    )
+    assert response.status_code == 422
+    assert "reason" in response.json()["detail"]
+
+
+def test_editing_the_window_brings_a_suppressed_finding_back(client):
+    detail = lintable_construct(client)
+    finding = rbs_finding(detail)
+    client.post(
+        f"/api/constructs/{detail['id']}/operations",
+        json={
+            "kind": "suppress_finding",
+            "payload": {
+                "rule_id": finding["rule_id"],
+                "feature_id": finding["feature_id"],
+                "reason": "weak RBS on purpose, titrating expression",
+                "window": finding["window"],
+                "rule_digest": finding["rule_digest"],
+            },
+        },
+    )
+    edited = client.post(
+        f"/api/constructs/{detail['id']}/operations",
+        json={"kind": "replace", "payload": {"start": 24, "end": 27, "seq": "GGG"}},
+    )
+    back = rbs_finding(edited.json())
+    assert back["suppressed"] is False
+    assert back["suppression"]["stale"] is True
+    assert back["suppression"]["was"] != back["suppression"]["now"]

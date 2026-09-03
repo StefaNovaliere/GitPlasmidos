@@ -235,7 +235,7 @@ def transforms_for(op: Operation, before: ConstructState) -> list[_Transform]:
     if op.kind == "set_origin":
         return [_Rotate(p["pos"] % n if n else 0, n)]
 
-    # add_feature / remove_feature / update_feature move no bases.
+    # The feature operations and the suppression operations move no bases.
     return []
 
 
@@ -284,6 +284,30 @@ def _map_span(
             )
         start, end = step.span(start, end)
     return start, end
+
+
+def carry_window(
+    window: dict | None, steps: list[_Transform], is_circular: bool
+) -> dict | None:
+    """Move a suppression's evidence window onto the target's coordinates.
+
+    Never a conflict, and that asymmetry is deliberate. A suppression moves no
+    bases: the worst an overlapping edit on the target can do is invalidate the
+    evidence it was recorded against, and the digest already catches that. So
+    an edit inside the window drops the coordinates instead of refusing the
+    merge, and the finding resurfaces marked stale on the other side. A note
+    somebody left about a warning should never be able to block a merge.
+    """
+    if not window or window.get("start") is None or window.get("end") is None:
+        return window
+    moved = dict(window)
+    try:
+        moved["start"], moved["end"] = _map_span(
+            window["start"], window["end"], steps, is_circular
+        )
+    except _Blocked:
+        moved["start"] = moved["end"] = None
+    return moved
 
 
 def rebase_operation(
@@ -343,6 +367,17 @@ def rebase_operation(
                 "rebased; send both start and end",
             )
         payload["patch"] = patch
+    elif op.kind == "suppress_finding":
+        if not any(f.id == payload["feature_id"] for f in target.features):
+            # The feature is gone on the target, so is the finding it raised.
+            return None
+        payload["window"] = carry_window(payload.get("window"), steps, circular)
+    elif op.kind == "unsuppress_finding":
+        if not any(
+            (s.rule_id, s.feature_id) == (payload["rule_id"], payload["feature_id"])
+            for s in target.suppressions
+        ):
+            return None  # nothing to lift: convergent, not a clash
 
     return Operation(
         id=op.id,

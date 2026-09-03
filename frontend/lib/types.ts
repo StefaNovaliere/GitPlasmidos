@@ -8,7 +8,9 @@ export type OperationKind =
   | "add_feature"
   | "remove_feature"
   | "update_feature"
-  | "set_origin";
+  | "set_origin"
+  | "suppress_finding"
+  | "unsuppress_finding";
 
 export interface Feature {
   id: string;
@@ -46,6 +48,57 @@ export interface FrameIssue {
   blocking: boolean;
 }
 
+/** Where the numbers in a design rule came from. */
+export interface RuleEvidence {
+  citation: string;
+  organism: string;
+  confidence: "established" | "reported" | "heuristic";
+  notes: string;
+}
+
+/**
+ * The bases a rule read, hashed.
+ *
+ * `digest` is over the window's text alone, so an edit somewhere else moves
+ * `start`/`end` without invalidating anything. Post it back verbatim to
+ * suppress the finding: the engine knows what it looked at.
+ */
+export interface EvidenceWindow {
+  algo: "sha256/1";
+  digest: string;
+  excerpt: string;
+  /** Null once an edit erased the window the rule had read. */
+  start: number | null;
+  end: number | null;
+}
+
+/** Why a finding is quiet, or why it started talking again. */
+export interface SuppressionState {
+  reason: string;
+  /** The bases under the suppression, or the rule itself, changed since. */
+  stale: boolean;
+  changed: "evidence" | "rule" | null;
+  was: string;
+  now: string;
+}
+
+/** One thing a design rule reported. Suppressed ones are marked, not dropped. */
+export interface Finding {
+  rule_id: string;
+  title: string;
+  severity: "error" | "warning" | "info";
+  feature_id: string | null;
+  feature_name: string;
+  message: string;
+  start: number | null;
+  end: number | null;
+  evidence: RuleEvidence;
+  window: EvidenceWindow | null;
+  rule_digest: string;
+  suppressed: boolean;
+  suppression: SuppressionState | null;
+}
+
 export interface ConstructDetail {
   id: string;
   name: string;
@@ -58,6 +111,7 @@ export interface ConstructDetail {
   gc_content: number;
   warnings: string[];
   frame_issues: FrameIssue[];
+  findings: Finding[];
   can_undo: boolean;
   can_redo: boolean;
   created_at: string;
