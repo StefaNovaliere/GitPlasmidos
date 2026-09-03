@@ -10,6 +10,7 @@ dependencies = [
     "biopython>=1.84",
     "sqlalchemy>=2.0",
     "python-multipart>=0.0.12",
+    "pyyaml>=6.0",
 ]
 
 [dependency-groups]
@@ -20,6 +21,7 @@ dev = [
 
 [project.scripts]
 visoradn-seed = "app.seed:main"
+visoradn-rules = "app.domain.rules.cli:main"
 
 [build-system]
 requires = ["hatchling"]

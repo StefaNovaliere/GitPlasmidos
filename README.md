@@ -192,7 +192,7 @@ anything.
 cd backend && uv run pytest
 ```
 
-424 tests: one per rebasing rule, explicit wraparound cases, GenBank round
+455 tests: one per rebasing rule, explicit wraparound cases, GenBank round
 trips against two real pUC19 records, reading-frame integrity, log merging,
 diffing, the seeded scenarios, and the HTTP surface end to end.
 
@@ -444,6 +444,77 @@ upstream".
 
 ---
 
+## Design rules
+
+Reading-frame integrity is one check written in Python. Most of what makes a
+construct fail is a different shape of question - is the ribosome binding site
+the right distance from the start codon, does anything terminate transcription
+after the gene, is a promoter on the other strand firing back into it - and
+those are questions biologists should be able to add without touching the
+engine.
+
+So they are data. A rule is a YAML file:
+
+```yaml
+# yaml-language-server: $schema=./rule.schema.json
+id: rbs-atg-spacing
+severity: error
+target: { feature_kind: CDS }
+region: { where: upstream, window: 30 }
+look:   { motif: AGGAGG, strand: same }
+expect: { presence: required, distance_min: 5, distance_max: 13 }
+evidence:
+  citation: "Shine J, Dalgarno L. PNAS 1974;71(4):1342-6. doi:10.1073/pnas.71.4.1342"
+  organism: "Escherichia coli"
+  confidence: established
+```
+
+`target / region / look / expect` covers all three rules in the shipped pack.
+The deliberate limit is that it stops there: position-weight matrices,
+thermodynamic binding strength and secondary structure need real computation,
+so they belong in Python. Both kinds report the same `Finding` and the engine
+does not know the difference - the same split as `replay()` owning coordinates
+while `check_reading_frames()` owns meaning.
+
+### Two required fields
+
+`evidence` and `examples` are not optional, and they are the reason this is
+worth doing rather than a folder of magic numbers.
+
+A threshold with no citation and no organism is folklore: six months on nobody
+can say whether "5-13 nt" was measured in *E. coli* or in yeast. Pydantic
+refuses the rule rather than leaving it for a reviewer to catch.
+
+`examples` are sequences that must and must not trigger the rule, and they run
+in CI. That is what lets a biologist add a rule and find out whether it is
+self-consistent without an engineer reading the biology - the collaboration
+runs in parallel instead of queueing behind one person.
+
+`confidence` also caps severity: a `heuristic` rule is refused if it declares
+itself an `error`. A linter that blocks a merge on a number nobody measured
+gets switched off, and it does not come back.
+
+### Authoring
+
+```bash
+uv run python -m app.domain.rules schema     # regenerate rule.schema.json
+uv run python -m app.domain.rules check      # validate, and run every example
+```
+
+The schema modeline at the top of each file gives autocompletion and inline
+errors in any editor with YAML language-server support, which turns writing a
+rule into filling a guided form rather than guessing field names.
+
+The engine reuses the wraparound helpers: a search window is an interval that
+may cross the origin, and a motif search is what enzyme sites already do.
+Motifs are IUPAC-aware, because a consensus written `TTGACR` searched literally
+finds nothing. The genuinely error-prone part is direction - a rule's region is
+expressed in the *target's reading direction*, so "upstream" of a minus-strand
+gene means higher coordinates. There are tests for exactly that, and a mutation
+that ignores strand direction fails two of them.
+
+---
+
 ## Import / export
 
 Import reads the first record of a FASTA or GenBank file (extra records are
@@ -480,9 +551,11 @@ backend/
       analysis.py              enzymes, ORFs, GC, reading frames
       merge.py                 rebasing one operation log onto another
       diff.py                  comparing two derived states
+      rules/                   design rules: models, loader, engine, CLI
     db/                        SQLAlchemy models + session
     seed.py                    the demo scenarios
   data/                        two real pUC19 GenBank records
+  rules/                       the rule pack, authored in YAML
   tests/
     test_rebasing.py  test_circular.py  test_replay.py  test_seqio.py
     test_analysis.py  test_reading_frame.py  test_merge.py  test_diff.py

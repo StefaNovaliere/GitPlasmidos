@@ -1,0 +1,25 @@
+# yaml-language-server: $schema=./rule.schema.json
+id: cds-without-terminator
+title: Transcription reads through past the end of the gene
+severity: warning
+target: { feature_kind: CDS }
+region: { where: downstream, window: 100 }
+look:   { feature_kind: terminator, strand: same }
+expect: { presence: required }
+message: "{feature}: no terminator annotated within {window} bp downstream; transcription will run into whatever follows"
+evidence:
+  citation: "Peters JM, et al. Annu Rev Biochem 2011;80:319-47. doi:10.1146/annurev-biochem-062608-160432"
+  organism: "Escherichia coli"
+  confidence: reported
+  notes: >
+    Checks for an annotated terminator, not for terminator structure. A
+    construct with a real but unannotated terminator will trip this.
+examples:
+  - name: terminator present downstream
+    sequence: ATGAAAGGGCCCTAACCCCCCCCCCTTTTTTTTTTTTTTTTTTTT
+    features: ["CDS:0-15:+:gene", "terminator:25-45:+:T1"]
+    triggers: false
+  - name: nothing after the stop codon
+    sequence: ATGAAAGGGCCCTAACCCCCCCCCCCCCCCCCCCCCCCCCCCCCC
+    features: ["CDS:0-15:+:gene"]
+    triggers: true

@@ -1,0 +1,25 @@
+# yaml-language-server: $schema=./rule.schema.json
+id: convergent-promoter
+title: A promoter on the other strand transcribes back into this gene
+severity: warning
+target: { feature_kind: CDS }
+region: { where: downstream, window: 200 }
+look:   { feature_kind: promoter, strand: opposite }
+expect: { presence: forbidden }
+message: "{feature}: a promoter on the opposite strand fires back into it; convergent transcription reduces expression of both"
+evidence:
+  citation: "Shearwin KE, Callen BP, Egan JB. Trends Genet 2005;21(6):339-45. doi:10.1016/j.tig.2005.04.009"
+  organism: "Escherichia coli"
+  confidence: reported
+  notes: >
+    Interference depends on the relative strength of the two promoters, which
+    this rule does not model. It flags the arrangement, not its severity.
+examples:
+  - name: promoters pointing the same way
+    sequence: ATGAAAGGGCCCTAACCCCCCCCCCGGGGGGGGGGTTTTTTTTTT
+    features: ["CDS:0-15:+:gene", "promoter:30-40:+:P2"]
+    triggers: false
+  - name: promoter firing back into the gene
+    sequence: ATGAAAGGGCCCTAACCCCCCCCCCGGGGGGGGGGTTTTTTTTTT
+    features: ["CDS:0-15:+:gene", "promoter:30-40:-:P2"]
+    triggers: true

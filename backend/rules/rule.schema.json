@@ -1,0 +1,278 @@
+{
+  "$defs": {
+    "Evidence": {
+      "additionalProperties": false,
+      "description": "Where the numbers in a rule came from.",
+      "properties": {
+        "citation": {
+          "minLength": 8,
+          "title": "Citation",
+          "type": "string"
+        },
+        "organism": {
+          "minLength": 2,
+          "title": "Organism",
+          "type": "string"
+        },
+        "confidence": {
+          "enum": [
+            "established",
+            "reported",
+            "heuristic"
+          ],
+          "title": "Confidence",
+          "type": "string"
+        },
+        "notes": {
+          "default": "",
+          "title": "Notes",
+          "type": "string"
+        }
+      },
+      "required": [
+        "citation",
+        "organism",
+        "confidence"
+      ],
+      "title": "Evidence",
+      "type": "object"
+    },
+    "Example": {
+      "additionalProperties": false,
+      "description": "A case the rule must get right. Run as a test.",
+      "properties": {
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "sequence": {
+          "title": "Sequence",
+          "type": "string"
+        },
+        "features": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Features",
+          "type": "array"
+        },
+        "is_circular": {
+          "default": false,
+          "title": "Is Circular",
+          "type": "boolean"
+        },
+        "triggers": {
+          "title": "Triggers",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "name",
+        "sequence",
+        "triggers"
+      ],
+      "title": "Example",
+      "type": "object"
+    },
+    "Expect": {
+      "additionalProperties": false,
+      "description": "What the rule asserts about what it found.",
+      "properties": {
+        "presence": {
+          "default": "required",
+          "enum": [
+            "required",
+            "forbidden"
+          ],
+          "title": "Presence",
+          "type": "string"
+        },
+        "distance_min": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Distance Min"
+        },
+        "distance_max": {
+          "anyOf": [
+            {
+              "minimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Distance Max"
+        }
+      },
+      "title": "Expect",
+      "type": "object"
+    },
+    "Look": {
+      "additionalProperties": false,
+      "description": "What to look for: a sequence motif, or an annotated feature.",
+      "properties": {
+        "motif": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Motif"
+        },
+        "feature_kind": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Feature Kind"
+        },
+        "strand": {
+          "default": "any",
+          "enum": [
+            "same",
+            "opposite",
+            "any"
+          ],
+          "title": "Strand",
+          "type": "string"
+        }
+      },
+      "title": "Look",
+      "type": "object"
+    },
+    "Region": {
+      "additionalProperties": false,
+      "description": "Where to look, relative to the target and *in its reading direction*.\n\nFor a feature on the minus strand \"upstream\" means higher coordinates, not\nlower ones.",
+      "properties": {
+        "where": {
+          "enum": [
+            "upstream",
+            "downstream",
+            "inside"
+          ],
+          "title": "Where",
+          "type": "string"
+        },
+        "window": {
+          "description": "bases",
+          "exclusiveMinimum": 0,
+          "maximum": 100000,
+          "title": "Window",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "where",
+        "window"
+      ],
+      "title": "Region",
+      "type": "object"
+    },
+    "Target": {
+      "additionalProperties": false,
+      "description": "Which features the rule runs against.",
+      "properties": {
+        "feature_kind": {
+          "default": "CDS",
+          "title": "Feature Kind",
+          "type": "string"
+        },
+        "strand": {
+          "default": "any",
+          "enum": [
+            "any",
+            "plus",
+            "minus"
+          ],
+          "title": "Strand",
+          "type": "string"
+        }
+      },
+      "title": "Target",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "One design rule.",
+  "properties": {
+    "id": {
+      "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$",
+      "title": "Id",
+      "type": "string"
+    },
+    "title": {
+      "minLength": 8,
+      "title": "Title",
+      "type": "string"
+    },
+    "severity": {
+      "enum": [
+        "error",
+        "warning",
+        "info"
+      ],
+      "title": "Severity",
+      "type": "string"
+    },
+    "target": {
+      "$ref": "#/$defs/Target"
+    },
+    "region": {
+      "$ref": "#/$defs/Region"
+    },
+    "look": {
+      "$ref": "#/$defs/Look"
+    },
+    "expect": {
+      "$ref": "#/$defs/Expect"
+    },
+    "message": {
+      "title": "Message",
+      "type": "string"
+    },
+    "evidence": {
+      "$ref": "#/$defs/Evidence"
+    },
+    "examples": {
+      "items": {
+        "$ref": "#/$defs/Example"
+      },
+      "minItems": 1,
+      "title": "Examples",
+      "type": "array"
+    }
+  },
+  "required": [
+    "id",
+    "title",
+    "severity",
+    "target",
+    "region",
+    "look",
+    "expect",
+    "message",
+    "evidence",
+    "examples"
+  ],
+  "title": "Rule",
+  "type": "object"
+}

@@ -1,0 +1,30 @@
+# yaml-language-server: $schema=./rule.schema.json
+id: rbs-atg-spacing
+title: Ribosome binding site sits at the wrong distance from the start codon
+severity: error
+target: { feature_kind: CDS }
+region: { where: upstream, window: 30 }
+look:   { motif: AGGAGG, strand: same }
+expect: { presence: required, distance_min: 5, distance_max: 13 }
+message: "{feature}: Shine-Dalgarno sequence is {distance} nt from the start codon; translation initiates efficiently at 5-13 nt"
+evidence:
+  citation: "Shine J, Dalgarno L. PNAS 1974;71(4):1342-6. doi:10.1073/pnas.71.4.1342"
+  organism: "Escherichia coli"
+  confidence: established
+  notes: >
+    The consensus is degenerate in real genomes; AGGAGG is the strong form.
+    Spacing optima are commonly reported around 7-9 nt, with function falling
+    off outside 5-13. Replace with a scoring rule once the pack supports one.
+examples:
+  - name: spacing within range
+    sequence: TTTTAGGAGGTATTATGAAAGGGCCCTAA
+    features: ["CDS:16-29:+:reporter"]
+    triggers: false
+  - name: no ribosome binding site at all
+    sequence: TTTTCCCCCCCCTATTATGAAAGGGCCCTAA
+    features: ["CDS:18-31:+:reporter"]
+    triggers: true
+  - name: Shine-Dalgarno too far from the ATG
+    sequence: AGGAGGTTTTTTTTTTTTTTTTTTTTATGAAAGGGCCCTAA
+    features: ["CDS:26-41:+:reporter"]
+    triggers: true
