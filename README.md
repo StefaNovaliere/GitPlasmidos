@@ -2,7 +2,7 @@
 
 A web editor for circular DNA sequences (plasmids, 2–20 kb): import GenBank or
 FASTA, view the circular and linear maps side by side, edit the sequence, and
-undo any of it. Portfolio project, not a clinical tool.
+undo any of it.
 
 ![The editor showing pUC19 with three cut sites selected](docs/screenshot.png)
 
