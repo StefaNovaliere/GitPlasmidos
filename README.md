@@ -1,4 +1,4 @@
-# visorADN
+# GitPlasmidos
 
 A web editor for circular DNA sequences (plasmids, 2–20 kb): import GenBank or
 FASTA, view the circular and linear maps side by side, edit the sequence, and
