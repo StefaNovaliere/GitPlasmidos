@@ -138,8 +138,9 @@ Nothing here requires you to write code — you copy a line, press Enter, and
 read what comes back. Budget about 20 minutes the first time, and under a
 minute every time after that.
 
-**What you are about to run.** visorADN is two programs that talk to each
-other on your own machine:
+**What you are about to run.** The repository you are about to download is
+called **GitPlasmidos**; the application inside it is called **visorADN**, and
+it is two programs that talk to each other on your own machine:
 
 | | What it is | Where it lives while running |
 |---|---|---|
@@ -290,32 +291,62 @@ Do not continue until all four print a version. Every later step depends on it.
 
 ### Step 3 — Download the code
 
-Choose where the project should live — your home folder is fine — and run:
+The code lives in a **private** GitHub repository called **GitPlasmidos**, so
+two things have to be in place before anything below works:
+
+1. **A GitHub account.** Free, at <https://github.com/signup>.
+2. **That account added to the repository.** Ask its owner to add you as a
+   collaborator — you cannot do this yourself. Until it is done, the command
+   below fails with *"Repository not found"*. GitHub says that instead of
+   *"you are not allowed"* on purpose, so do not read it as a typo on your
+   side: a private repository you cannot see is indistinguishable from one
+   that does not exist.
+
+Then pick where the project should live — your home folder is fine:
 
 ```bash
 cd ~                 # Windows PowerShell: cd $HOME
-git clone https://github.com/StefaNovaliere/visorADN.git
-cd visorADN
+git clone https://github.com/StefaNovaliere/GitPlasmidos.git
+cd GitPlasmidos
 ```
 
-You now have a folder called `visorADN` containing `backend/`, `frontend/` and
-`docs/`. Confirm you are inside it:
+Because the repository is private, Git asks you to prove who you are. This
+happens once:
+
+- **Windows** — a browser window opens. Sign in to GitHub, approve, and Git
+  remembers it from then on.
+- **macOS / Linux** — you are asked for a *username* and a *password*. The
+  username is your GitHub username. The **password is not your GitHub
+  password**: GitHub stopped accepting those in 2021. Generate a token at
+  <https://github.com/settings/tokens> (*Generate new token (classic)* → tick
+  the **repo** checkbox → *Generate token*), copy it, and paste it at the
+  password prompt. Nothing appears on screen while you paste — that is
+  deliberate, not a frozen terminal. Save the token somewhere safe; GitHub
+  shows it exactly once. On macOS it is then stored in your Keychain
+  automatically; on Linux, `git config --global credential.helper store` saves
+  it for next time, in a plain-text file in your home folder.
+
+You now have a folder called `GitPlasmidos` containing `backend/`, `frontend/`
+and `docs/`. The folder and the application have different names — the
+repository is *GitPlasmidos*, the program inside it presents itself as
+*visorADN*. Nothing is wrong. Confirm you are inside the folder:
 
 ```bash
 ls                   # Windows PowerShell also accepts ls
 # backend  docs  frontend  README.md
 ```
 
-> **No Git?** You can instead download the ZIP from the GitHub page (green
-> **Code** button → *Download ZIP*), unzip it, and `cd` into the unzipped
-> folder. Everything else works the same; only updating later is less
-> convenient.
+> **Prefer not to use Git at all?** With your browser signed in to a GitHub
+> account that has access, open the repository page, click the green **Code**
+> button → *Download ZIP*, unzip it, and `cd` into the unzipped folder — it
+> will be called `GitPlasmidos-main`. Everything else in this guide works the
+> same; only updating to a newer version later is less convenient.
 
 ---
 
 ### Step 4 — Start the backend (terminal 1)
 
-From inside the `visorADN` folder:
+From inside the `GitPlasmidos` folder:
 
 ```bash
 cd backend
@@ -336,7 +367,7 @@ uv run uvicorn app.main:app --reload --port 8000
 You should see something close to:
 
 ```
-INFO:     Will watch for changes in these directories: ['.../visorADN/backend']
+INFO:     Will watch for changes in these directories: ['.../GitPlasmidos/backend']
 INFO:     Uvicorn running on http://127.0.0.1:8000 (Press CTRL+C to quit)
 INFO:     Application startup complete.
 ```
@@ -358,7 +389,7 @@ using it. (Windows Terminal: <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>T</kbd>
 for a new tab. macOS Terminal: <kbd>⌘</kbd> + <kbd>N</kbd>.)
 
 ```bash
-cd ~/visorADN/backend       # Windows PowerShell: cd $HOME\visorADN\backend
+cd ~/GitPlasmidos/backend   # Windows PowerShell: cd $HOME\GitPlasmidos\backend
 uv run python -m app.seed --reset
 ```
 
@@ -403,7 +434,7 @@ from here.
 Still in terminal 2, the seeding is done, so you can reuse it:
 
 ```bash
-cd ../frontend              # or: cd ~/visorADN/frontend
+cd ../frontend              # or: cd ~/GitPlasmidos/frontend
 pnpm install
 pnpm dev
 ```
@@ -463,10 +494,10 @@ Starting again is four lines, no installation:
 
 ```bash
 # terminal 1
-cd ~/visorADN/backend && uv run uvicorn app.main:app --reload --port 8000
+cd ~/GitPlasmidos/backend && uv run uvicorn app.main:app --reload --port 8000
 
 # terminal 2
-cd ~/visorADN/frontend && pnpm dev
+cd ~/GitPlasmidos/frontend && pnpm dev
 ```
 
 On Windows PowerShell, `&&` works the same in recent versions; if it complains,
@@ -475,7 +506,7 @@ just run the two halves as separate lines.
 To pick up a newer version of the code later:
 
 ```bash
-cd ~/visorADN
+cd ~/GitPlasmidos
 git pull
 cd backend && uv sync && cd ../frontend && pnpm install
 ```
@@ -487,6 +518,8 @@ cd backend && uv sync && cd ../frontend && pnpm install
 | What you see | What it means | What to do |
 |---|---|---|
 | `command not found` / `is not recognized as the name of a cmdlet` | The terminal was opened before the tool was installed, or the tool is missing. | Close **every** terminal window, open a new one, retry. Then reinstall that tool (step 1). |
+| `git clone` says `repository not found` | Almost never a typo: the repository is private and the GitHub account you authenticated with has not been given access. | Ask the owner to add your account as a collaborator, then retry (step 3). |
+| `git clone` says `Authentication failed` or keeps asking for a password | Your GitHub *password* was typed at the password prompt. GitHub does not accept it. | Paste a personal access token instead (step 3). |
 | `[Errno 48] Address already in use` / `error while attempting to bind on address` | Something else is already using port 8000 (often a forgotten copy of this backend). | Find and stop it — see below — or run the backend on another port (see *Settings*). |
 | `⚠ Port 3000 is in use, using 3001 instead` | Same thing on the frontend side. Next.js moved by itself. | Fine, but the backend only trusts port 3000 by default. Either free port 3000, or set `CORS_ORIGINS` (see *Settings*). |
 | The page loads but every panel says *"Failed to fetch"* or *"Could not reach the API"* | The frontend is running, the backend is not. | Check terminal 1. If it exited, start it again (step 4) and reload the page. |
