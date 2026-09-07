@@ -9,6 +9,12 @@ undo any of it. Portfolio project, not a clinical tool.
 - **Backend** — Python 3.11, FastAPI, Pydantic v2, Biopython, SQLAlchemy 2 + SQLite
 - **Frontend** — Next.js 15 (App Router), TypeScript, Tailwind 4, [`seqviz`](https://github.com/Lattice-Automation/seqviz)
 
+> **Just want to run it?** Jump to
+> [Running it locally, step by step](#running-it-locally-step-by-step) — a
+> complete walkthrough for Windows, macOS and Linux that assumes no
+> programming background. The rest of this README explains how the thing works
+> and is not needed to use it.
+
 ---
 
 ## The idea: current state is derived, never stored
@@ -125,43 +131,241 @@ start past the end, so a site spanning the origin is found exactly once.
 
 ---
 
-## Running it
+## Running it locally, step by step
 
-Two processes. The backend serves on `:8000`, the frontend on `:3000`.
+This section assumes you have never started a program from a terminal before.
+Nothing here requires you to write code — you copy a line, press Enter, and
+read what comes back. Budget about 20 minutes the first time, and under a
+minute every time after that.
 
-### Backend
+**What you are about to run.** visorADN is two programs that talk to each
+other on your own machine:
+
+| | What it is | Where it lives while running |
+|---|---|---|
+| **The backend** | The engine: it holds the sequences, applies edits, runs the design rules. No window, just text in a terminal. | `http://localhost:8000` |
+| **The frontend** | The page you actually look at and click. | `http://localhost:3000` |
+
+`localhost` means *this computer*. Both programs run on your machine, the
+sequences you import stay in a single file on your disk
+(`backend/visoradn.db`), and nothing is uploaded anywhere. You need the
+internet only for the installation steps below — after that it works offline.
+
+Each program runs in its own terminal window, and **that window has to stay
+open** the whole time you are using visorADN. Closing it stops the program.
+This is normal and is how nearly all development tools work.
+
+---
+
+### Step 1 — Install the three tools you need (once)
+
+| Tool | Why | Do you already have it? |
+|---|---|---|
+| **Git** | Downloads the code from GitHub and keeps it updatable. | Often preinstalled on macOS and Linux. |
+| **uv** | Runs the backend. It also installs the correct Python (3.11+) for you, so **you do not need to install Python yourself**. | Probably not — install it. |
+| **Node.js + pnpm** | Runs the frontend. Node is the engine; pnpm installs the frontend's libraries. | Probably not — install both. |
+
+Pick your operating system below and run the commands one at a time, waiting
+for each to finish before starting the next.
+
+#### Windows 10 / 11
+
+Open **PowerShell**: press the Windows key, type `powershell`, press Enter. A
+blue or black window with a blinking cursor appears — that is the terminal.
+
+```powershell
+winget install --id Git.Git -e
+winget install --id OpenJS.NodeJS.LTS -e
+winget install --id astral-sh.uv -e
+```
+
+**Now close PowerShell completely and open it again.** Newly installed tools
+are only visible to terminal windows opened *after* the installation — this is
+the single most common reason a command "does not exist" five minutes after
+you installed it.
+
+Then install pnpm:
+
+```powershell
+npm install -g pnpm@10.33.0
+```
+
+<details>
+<summary>If <code>winget</code> is not available on your machine</summary>
+
+Download and run the installers by hand instead:
+
+- Git — <https://git-scm.com/download/win> (accept every default)
+- Node.js — <https://nodejs.org> (choose the **LTS** version)
+- uv — paste this into PowerShell:
+  ```powershell
+  powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
+  ```
+
+Then reopen PowerShell and run `npm install -g pnpm@10.33.0`.
+</details>
+
+> If you already use WSL (Windows Subsystem for Linux), you can ignore all of
+> the above and follow the **Linux** instructions inside your WSL terminal
+> instead. Do not mix the two.
+
+#### macOS
+
+Open **Terminal**: press <kbd>⌘</kbd> + <kbd>Space</kbd>, type `terminal`,
+press Enter.
+
+```bash
+xcode-select --install                          # Git and friends; skip if it says already installed
+curl -LsSf https://astral.sh/uv/install.sh | sh # uv
+```
+
+For Node.js, either download the **LTS** installer from <https://nodejs.org>
+and double-click it, or, if you already use [Homebrew](https://brew.sh):
+
+```bash
+brew install node
+```
+
+Then close the Terminal window, open a new one, and install pnpm:
+
+```bash
+npm install -g pnpm@10.33.0
+```
+
+#### Linux
+
+Open a terminal (on most desktops: <kbd>Ctrl</kbd> + <kbd>Alt</kbd> +
+<kbd>T</kbd>).
+
+```bash
+# Debian / Ubuntu / Mint
+sudo apt update && sudo apt install -y git curl
+
+# Fedora:        sudo dnf install -y git curl
+# Arch / Manjaro: sudo pacman -S --needed git curl
+```
+
+```bash
+# uv (installs its own Python — nothing else to do for the backend)
+curl -LsSf https://astral.sh/uv/install.sh | sh
+```
+
+```bash
+# Node.js 20 or newer, Debian/Ubuntu:
+curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash -
+sudo apt install -y nodejs
+
+# Fedora:        sudo dnf install -y nodejs
+# Arch/Manjaro:  sudo pacman -S nodejs npm
+```
+
+Close the terminal, open a new one, then:
+
+```bash
+sudo npm install -g pnpm@10.33.0
+```
+
+---
+
+### Step 2 — Check that all four tools answer
+
+In a **freshly opened** terminal, run these four lines. Each should print a
+version number:
+
+```bash
+git --version     # git version 2.43.0        (any 2.x is fine)
+uv --version      # uv 0.8.17                 (any recent version is fine)
+node --version    # v22.22.2                  (must be v20 or higher)
+pnpm --version    # 10.33.0
+```
+
+If one of them says *"command not found"* (macOS/Linux) or *"is not
+recognized as the name of a cmdlet"* (Windows), that tool did not install or
+your terminal is older than the installation. Close every terminal window,
+open a new one, and try again. If it still fails, reinstall just that tool.
+
+Do not continue until all four print a version. Every later step depends on it.
+
+---
+
+### Step 3 — Download the code
+
+Choose where the project should live — your home folder is fine — and run:
+
+```bash
+cd ~                 # Windows PowerShell: cd $HOME
+git clone https://github.com/StefaNovaliere/visorADN.git
+cd visorADN
+```
+
+You now have a folder called `visorADN` containing `backend/`, `frontend/` and
+`docs/`. Confirm you are inside it:
+
+```bash
+ls                   # Windows PowerShell also accepts ls
+# backend  docs  frontend  README.md
+```
+
+> **No Git?** You can instead download the ZIP from the GitHub page (green
+> **Code** button → *Download ZIP*), unzip it, and `cd` into the unzipped
+> folder. Everything else works the same; only updating later is less
+> convenient.
+
+---
+
+### Step 4 — Start the backend (terminal 1)
+
+From inside the `visorADN` folder:
 
 ```bash
 cd backend
 uv sync
+```
+
+`uv sync` downloads Python and the backend's libraries into `backend/.venv`.
+**The first run takes one to three minutes** and prints a long list of package
+names. It is silent for stretches — that is normal, let it finish. Later runs
+take about a second.
+
+Now start the server:
+
+```bash
 uv run uvicorn app.main:app --reload --port 8000
 ```
 
-Interactive API docs: <http://localhost:8000/docs>.
-The SQLite file lands at `backend/visoradn.db`; override with `DATABASE_URL`.
+You should see something close to:
 
-### Frontend
-
-```bash
-cd frontend
-pnpm install
-pnpm dev
+```
+INFO:     Will watch for changes in these directories: ['.../visorADN/backend']
+INFO:     Uvicorn running on http://127.0.0.1:8000 (Press CTRL+C to quit)
+INFO:     Application startup complete.
 ```
 
-Then open <http://localhost:3000>.
+**Leave this window open and untouched.** It looks like it has frozen; it has
+not — it is waiting for requests, and it will print a line each time the app
+asks it for something.
 
-Point the UI at a different API with `NEXT_PUBLIC_API_BASE_URL`; allow extra
-browser origins with `CORS_ORIGINS` on the backend.
+To confirm it works, open <http://localhost:8000/api/health> in your browser.
+It should show `{"status":"ok"}`. The full interactive API documentation is at
+<http://localhost:8000/docs>.
 
-### Seed the demo scenarios
+---
+
+### Step 5 — Load the demo plasmids (terminal 2)
+
+Open a **second** terminal window — do not reuse the first one, the backend is
+using it. (Windows Terminal: <kbd>Ctrl</kbd> + <kbd>Shift</kbd> + <kbd>T</kbd>
+for a new tab. macOS Terminal: <kbd>⌘</kbd> + <kbd>N</kbd>.)
 
 ```bash
-cd backend && uv run python -m app.seed --reset
+cd ~/visorADN/backend       # Windows PowerShell: cd $HOME\visorADN\backend
+uv run python -m app.seed --reset
 ```
 
-It prints a run sheet: every scenario worth showing, in order, with its URL
-already resolved and one sentence saying what to click. A demo typed from
-memory is a demo that goes wrong in front of the person you wanted to impress.
+This creates six constructs — wild-type pUC19 plus five branches — and prints
+a run sheet: every scenario worth showing, in order, with its URL already
+resolved and one sentence saying what to click. A demo typed from memory is a
+demo that goes wrong in front of the person you wanted to impress.
 
 ```
 Demo, in order:
@@ -184,7 +388,180 @@ Demo, in order:
      this time: 8 + 3 + 3 puts the Shine-Dalgarno 14 nt from the ATG […]
 ```
 
-### The first screen is two suppressed findings, on purpose
+Keep that output on screen — you will follow it in step 7. The identifiers are
+generated fresh on your machine, so they will not match the ones printed here.
+
+`--reset` deletes every existing construct first. Without it the command is
+idempotent: running it again restores whatever is missing and leaves the rest
+alone. Constructs can be deleted from the listing in the app, and re-seeded
+from here.
+
+---
+
+### Step 6 — Start the frontend (same terminal 2)
+
+Still in terminal 2, the seeding is done, so you can reuse it:
+
+```bash
+cd ../frontend              # or: cd ~/visorADN/frontend
+pnpm install
+pnpm dev
+```
+
+`pnpm install` takes about a minute the first time. Then `pnpm dev` prints:
+
+```
+   ▲ Next.js 15.5.25
+   - Local:        http://localhost:3000
+
+ ✓ Ready in 1596ms
+```
+
+**Leave this window open too.** You now have two terminals running: the
+backend in one, the frontend in the other. That is the normal working state.
+
+---
+
+### Step 7 — Open it and take the tour
+
+Go to <http://localhost:3000> in your browser (Chrome, Firefox, Edge and
+Safari all work).
+
+The first time you open a page it may take five to ten seconds and the tab
+will look stuck — Next.js is compiling that page on demand in development
+mode. Subsequent visits are instant.
+
+Then follow the run sheet from step 5, in order:
+
+1. **pUC19** — the circular and linear maps, 18 features, single cutters in the
+   enzyme panel. The findings panel reads *"2 findings, 2 suppressed"*, and the
+   reason each was suppressed is in the history, where it can be read, undone
+   or disagreed with.
+2. **pUC19 · AmpR +Phe** → *Branches → Merge "pUC19 · AmpR +Cys"*. Two branches
+   that are each perfectly fine alone; merged, the two inserted codons read
+   across a boundary as a stop and beta-lactamase dies at residue 163 of 289.
+   The merge is refused and the dialog shows all three reading frames as codons.
+3. **pUC19 · RBS spacer (lab A)** → *Branches → Merge "…(lab B)"*. Refused by a
+   design rule instead: the two spacer insertions add up to a
+   Shine-Dalgarno-to-ATG distance nothing will translate well from.
+4. **pUC19** → *Branches → Compare* against the MCS swap. One replaced block,
+   one added annotation, four genuinely truncated features, and fourteen that
+   merely shifted, reported apart.
+
+![The home page after seeding](docs/home.png)
+
+---
+
+### Stopping, and starting again tomorrow
+
+To stop either program, click its terminal window and press
+<kbd>Ctrl</kbd> + <kbd>C</kbd> (on macOS too — <kbd>Ctrl</kbd>, not
+<kbd>⌘</kbd>). Do that in both windows. Nothing is lost: your constructs live
+in `backend/visoradn.db` on disk.
+
+Starting again is four lines, no installation:
+
+```bash
+# terminal 1
+cd ~/visorADN/backend && uv run uvicorn app.main:app --reload --port 8000
+
+# terminal 2
+cd ~/visorADN/frontend && pnpm dev
+```
+
+On Windows PowerShell, `&&` works the same in recent versions; if it complains,
+just run the two halves as separate lines.
+
+To pick up a newer version of the code later:
+
+```bash
+cd ~/visorADN
+git pull
+cd backend && uv sync && cd ../frontend && pnpm install
+```
+
+---
+
+### If something goes wrong
+
+| What you see | What it means | What to do |
+|---|---|---|
+| `command not found` / `is not recognized as the name of a cmdlet` | The terminal was opened before the tool was installed, or the tool is missing. | Close **every** terminal window, open a new one, retry. Then reinstall that tool (step 1). |
+| `[Errno 48] Address already in use` / `error while attempting to bind on address` | Something else is already using port 8000 (often a forgotten copy of this backend). | Find and stop it — see below — or run the backend on another port (see *Settings*). |
+| `⚠ Port 3000 is in use, using 3001 instead` | Same thing on the frontend side. Next.js moved by itself. | Fine, but the backend only trusts port 3000 by default. Either free port 3000, or set `CORS_ORIGINS` (see *Settings*). |
+| The page loads but every panel says *"Failed to fetch"* or *"Could not reach the API"* | The frontend is running, the backend is not. | Check terminal 1. If it exited, start it again (step 4) and reload the page. |
+| The listing is empty | The database has no constructs yet. | Run the seed command from step 5. |
+| `uv sync` or `pnpm install` stops with a network/TLS error | No internet, or a corporate proxy/firewall is intercepting downloads. | Retry on a different network, or ask IT to allow `pypi.org`, `astral.sh` and `registry.npmjs.org`. |
+| Windows: *"running scripts is disabled on this system"* | PowerShell's execution policy blocks the uv install script. | Use the `winget` command instead, or the `powershell -ExecutionPolicy ByPass -c …` form given in step 1. |
+| macOS: *"cannot be opened because the developer cannot be verified"* | Gatekeeper blocking a downloaded installer. | *System Settings → Privacy & Security → Open Anyway*, or install via Homebrew instead. |
+| The app behaves oddly after an interrupted edit, or you want a clean slate | Local database state. | Stop the backend, delete `backend/visoradn.db`, start it again, re-run the seed command. |
+| `pnpm dev` fails with an error mentioning an unsupported Node version | Node is older than 20. | Install the current **LTS** from <https://nodejs.org> and check with `node --version`. |
+
+**Freeing a busy port** (replace `8000` with `3000` as needed):
+
+```powershell
+# Windows PowerShell
+netstat -ano | findstr :8000      # last column is the process id (PID)
+taskkill /PID 12345 /F
+```
+
+```bash
+# macOS / Linux
+lsof -i :8000                     # second column is the PID
+kill 12345
+```
+
+---
+
+### Settings you can change
+
+None of these are needed for normal use. Set them in the terminal *before* the
+command that starts the program.
+
+| Variable | Belongs to | Default | What it does |
+|---|---|---|---|
+| `DATABASE_URL` | backend | `sqlite:///backend/visoradn.db` | Where constructs are stored. |
+| `CORS_ORIGINS` | backend | `http://localhost:3000,http://127.0.0.1:3000` | Which browser origins may call the API. Widen it if the frontend runs on another port. |
+| `NEXT_PUBLIC_API_BASE_URL` | frontend | `http://localhost:8000` | Where the UI looks for the API. |
+
+```bash
+# macOS / Linux
+NEXT_PUBLIC_API_BASE_URL=http://localhost:8001 pnpm dev
+```
+
+```powershell
+# Windows PowerShell
+$env:NEXT_PUBLIC_API_BASE_URL = "http://localhost:8001"
+pnpm dev
+```
+
+The backend port is a flag rather than a variable:
+`uv run uvicorn app.main:app --reload --port 8001`. If you change either port,
+change the matching setting on the other side as well — otherwise the two
+programs stop finding each other, which shows up as *"Failed to fetch"*.
+
+A production-style build of the frontend (faster pages, no on-demand
+compiling, no live reload) is `pnpm build` followed by `pnpm start`.
+
+---
+
+### About the demo scenarios
+
+Both merge refusals are asserted in `tests/test_seed.py` — each branch clean on
+its own, the merge blocked for the reason the run sheet claims — so the demo
+cannot quietly stop demonstrating anything.
+
+The AmpR pair is the one to read closely. Two teams each insert a single codon
+into the beta-lactamase gene at the same site: one adds a phenylalanine, the
+other a cysteine. Each branch alone yields a full-length 287-residue protein
+with no reading-frame problem. Their inserts are single points, so they cannot
+overlap, and both are 3 bp, so neither shifts the frame — a text merge, or a
+CRDT over the sequence, reports success. Merged, the two codons read across a
+codon boundary as a stop, and AmpR dies at residue 163 of 289. The merge is
+refused with a 409 naming the codon. That pair was found by search rather than
+by hand: `app/seed.py` records the positions.
+
+#### The first screen is two suppressed findings, on purpose
 
 Wild-type pUC19 trips `rbs-atg-spacing` on both of its genes: neither carries
 the strong AGGAGG consensus, and both are transcribed anyway. The rule is not
@@ -201,50 +578,25 @@ still visible.
 
 They are computed, never hardcoded: a suppression carries the digest of the
 window its rule read, so it can only be built by asking the engine what it
-just looked at. Step 3 then shows the other half of that — the two labs
-replace the bases the wild-type decision was made about, so it stops covering
-them and the merge dialog says so, quoting both readings.
+just looked at. Step 3 of the run sheet then shows the other half of that — the
+two labs replace the bases the wild-type decision was made about, so it stops
+covering them and the merge dialog says so, quoting both readings.
 
-Without `--reset` it is idempotent: running it again restores whatever is
-missing and leaves the rest alone. Constructs can be deleted from the listing,
-and re-seeded from there.
-
-![The home page after seeding](docs/home.png)
-
-There is a fourth thing worth showing that has no button of its own: on pUC19,
-*Branches → Compare* against the MCS swap. One replaced block, one added
-annotation, four genuinely truncated features, and fourteen that merely
-shifted, reported apart.
-
-Both refusals are asserted in `tests/test_seed.py` — each branch clean on its
-own, the merge blocked for the reason the run sheet claims — so the demo
-cannot quietly stop demonstrating anything.
-
-The third is the one to read closely. Two teams each insert a single codon
-into the beta-lactamase gene at the same site: one adds a phenylalanine, the
-other a cysteine. Each branch alone yields a full-length 287-residue protein
-with no reading-frame problem. Their inserts are single points, so they cannot
-overlap, and both are 3 bp, so neither shifts the frame — a text merge, or a
-CRDT over the sequence, reports success.
-
-Merged, the two codons read across a codon boundary as a stop, and AmpR dies
-at residue 163 of 289. The merge is refused with a 409 naming the codon.
-
-That pair was found by search rather than by hand — `app/seed.py` records the
-positions, and `tests/test_seed.py` asserts that each branch is clean and that
-merging them still breaks `bla`, so the demo cannot quietly stop demonstrating
-anything.
+---
 
 ### Tests
 
 ```bash
-cd backend && uv run pytest
+cd backend
+uv run pytest
 ```
 
-510 tests: one per rebasing rule, explicit wraparound cases, GenBank round
+512 tests: one per rebasing rule, explicit wraparound cases, GenBank round
 trips against two real pUC19 records, reading-frame integrity, log merging,
 design rules and their suppressions, both merge gates, the seeded scenarios,
-and the HTTP surface end to end.
+and the HTTP surface end to end. They need neither server to be running.
+
+The frontend has no test suite; `pnpm typecheck` type-checks it.
 
 ---
 
