@@ -494,21 +494,28 @@ Starting again is four lines, no installation:
 
 ```bash
 # terminal 1
-cd ~/GitPlasmidos/backend && uv run uvicorn app.main:app --reload --port 8000
+cd ~/GitPlasmidos/backend
+uv run uvicorn app.main:app --reload --port 8000
 
 # terminal 2
-cd ~/GitPlasmidos/frontend && pnpm dev
+cd ~/GitPlasmidos/frontend
+pnpm dev
 ```
 
-On Windows PowerShell, `&&` works the same in recent versions; if it complains,
-just run the two halves as separate lines.
+One instruction per line on purpose. Windows 10 and 11 still ship **Windows
+PowerShell 5.1** as the default, and it rejects `&&` with *"El token '&&' no es
+un separador de instrucciones válido en esta versión"*. PowerShell 7 and every
+macOS/Linux shell accept it, but separate lines work everywhere.
 
 To pick up a newer version of the code later:
 
 ```bash
 cd ~/GitPlasmidos
 git pull
-cd backend && uv sync && cd ../frontend && pnpm install
+cd backend
+uv sync
+cd ../frontend
+pnpm install
 ```
 
 ---
