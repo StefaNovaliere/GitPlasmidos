@@ -160,6 +160,12 @@ This is normal and is how nearly all development tools work.
 
 ### Step 1 — Install the three tools you need (once)
 
+visorADN is not a `.exe` you double-click: it is source code, and source code
+needs the two runtimes that execute it — one for the backend, one for the
+frontend. That is what this step installs, once per machine. If someone has
+run visorADN in front of you without any of this, that machine already had
+them, or it was not their machine.
+
 | Tool | Why | Do you already have it? |
 |---|---|---|
 | **Git** | Downloads the code from GitHub and keeps it updatable. | Often preinstalled on macOS and Linux. |
@@ -179,6 +185,16 @@ winget install --id Git.Git -e
 winget install --id OpenJS.NodeJS.LTS -e
 winget install --id astral-sh.uv -e
 ```
+
+Two things will happen during those three commands, and both are expected:
+
+- **Windows asks for administrator permission several times.** `winget`
+  installs for the whole machine, so each installer needs it. Approve them.
+- **A "Microsoft Visual C++ Redistributable" window appears** while uv
+  installs. You did not ask for it and visorADN does not use it directly:
+  `winget`'s uv package simply declares it as a dependency. It is a standard
+  Microsoft runtime library, about 18 MB, that most Windows machines already
+  have for other programs. Let it finish.
 
 **Now close PowerShell completely and open it again.** Newly installed tools
 are only visible to terminal windows opened *after* the installation — this is
